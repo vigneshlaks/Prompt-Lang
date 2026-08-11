@@ -58,3 +58,36 @@ def test_bare_name_without_call_is_rejected():
 
     with pytest.raises(InterpreterError):
         run("noop", {"noop": noop})
+
+
+def test_assignment_binds_a_readable_variable():
+    def add_one(x):
+        return x + 1
+
+    result = run("x = 5\nadd_one(x)", {"add_one": add_one})
+    assert result == 6
+
+
+def test_assignment_to_non_name_target_is_rejected():
+    with pytest.raises(InterpreterError):
+        run("x[0] = 1", {})
+
+
+def test_conditional_true_branch_executes():
+    source = "if 1 == 1:\n    y = 1\nelse:\n    y = 0\ny"
+    assert run(source, {}) == 1
+
+
+def test_conditional_false_branch_executes():
+    source = "if 1 == 2:\n    y = 1\nelse:\n    y = 0\ny"
+    assert run(source, {}) == 0
+
+
+def test_conditional_with_undefined_test_variable_is_rejected():
+    with pytest.raises(InterpreterError):
+        run("if x == 1:\n    y = 1", {})
+
+
+def test_unsupported_statement_inside_branch_is_rejected():
+    with pytest.raises(InterpreterError):
+        run("if 1 == 1:\n    import os", {})

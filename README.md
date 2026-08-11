@@ -11,9 +11,11 @@ of.
 parses a model's output with `ast.parse` and dispatches only through an
 explicit whitelist, never `eval()`. It's ported from `provenance-ac`'s
 `agent_demo/agent_loop.py`, which used the identical pattern for a single
-tool call. Growing it into a real language means adding more statement
-types to `eval_node` (assignment, conditionals, loops), not relaxing the
-whitelist check.
+tool call. It currently supports a toy grammar of function calls,
+assignment, and if/else conditionals (see the grammar in
+`interpreter.py`'s module docstring); growing it further means adding
+more statement types to `eval_node`/`exec_stmt` (loops, more expression
+forms), not relaxing the whitelist check.
 
 ## What didn't come over from provenance-ac, on purpose
 
@@ -26,9 +28,11 @@ in the first place.
 
 ## Status
 
-Nothing beyond the parsing and dispatch seed exists yet. The immediate
-next step is testing whether an open-weight model can reliably generate
-valid syntax for a real grammar, before building the grammar out further.
+Parsing, dispatch, assignment, and if/else conditionals exist, each with
+a passing and a rejected-case test. No capability/taint system and no
+shared store yet. The immediate next step is testing whether an
+open-weight model can reliably generate valid syntax for this grammar,
+before building it out further.
 
 ```bash
 pip install pytest
