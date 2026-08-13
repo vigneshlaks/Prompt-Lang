@@ -62,7 +62,15 @@ that refuse to run at all if any argument is tainted, raising
 `CapabilityError` before the underlying call happens. This is single-hop
 only — a tainted value passed through an ordinary function comes back
 untainted, since propagation through arbitrary computation isn't tracked
-yet. No shared store yet; that's next.
+yet.
+
+A single-hop shared-store test confirms the mechanism against a stateful
+store, not just a stateless stub: a planted value blocks a downstream
+privileged call, an unrelated non-privileged call using shared-store data
+is unaffected, and — the case worth calling out — a program is still
+blocked from a privileged call using data it wrote to the store itself
+earlier in the same run, since every read from a shared store is treated
+as untrusted regardless of who wrote it.
 
 ```bash
 pip install pytest

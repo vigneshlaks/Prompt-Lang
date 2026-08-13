@@ -150,3 +150,62 @@ def test_tainted_value_allowed_into_a_non_privileged_function():
         sources=frozenset({"read_secret"}),
     )
     assert calls == ["sk-secret"]
+
+
+def _make_shared_store():
+    store = {}
+
+    def write_shared(key, value):
+        store[key] = value
+
+    def read_shared(key):
+        return store[key]
+
+    return store, write_shared, read_shared
+
+
+def test_planted_value_in_shared_store_blocks_privileged_op():
+    store, _, read_shared = _make_shared_store()
+    store["inbox"] = "attacker-controlled payload"
+
+    def approve(x):
+        raise AssertionError("must not be called with a tainted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "x = read_shared('inbox')\napprove(x)",
+            {"read_shared": read_shared, "approve": approve},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_shared_store_value_allowed_into_non_privileged_function():
+    store, _, read_shared = _make_shared_store()
+    store["inbox"] = "some message"
+    calls = []
+
+    def log(x):
+        calls.append(x)
+
+    run(
+        "log(read_shared('inbox'))",
+        {"read_shared": read_shared, "log": log},
+        sources=frozenset({"read_shared"}),
+    )
+    assert calls == ["some message"]
+
+
+def test_write_then_read_own_shared_value_still_blocked_from_privileged_op():
+    store, write_shared, read_shared = _make_shared_store()
+
+    def approve(x):
+        raise AssertionError("must not be called with a tainted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "write_shared('note', 'hello')\nx = read_shared('note')\napprove(x)",
+            {"write_shared": write_shared, "read_shared": read_shared, "approve": approve},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve"}),
+        )
