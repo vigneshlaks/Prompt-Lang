@@ -4,7 +4,7 @@ parsing and dispatch pattern for a single tool call.
 """
 
 import pytest
-from interpreter import InterpreterError, run
+from interpreter import CapabilityError, InterpreterError, run
 
 
 def test_simple_call_dispatches():
@@ -91,3 +91,62 @@ def test_conditional_with_undefined_test_variable_is_rejected():
 def test_unsupported_statement_inside_branch_is_rejected():
     with pytest.raises(InterpreterError):
         run("if 1 == 1:\n    import os", {})
+
+
+def test_trusted_value_allowed_into_privileged_op():
+    calls = []
+
+    def approve(x):
+        calls.append(x)
+
+    run("approve(5)", {"approve": approve}, privileged=frozenset({"approve"}))
+    assert calls == [5]
+
+
+def test_tainted_value_blocked_from_privileged_op():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with a tainted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(read_secret())",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_tainted_value_still_blocked_after_passing_through_a_variable():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with a tainted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "x = read_secret()\napprove(x)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_tainted_value_allowed_into_a_non_privileged_function():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def log(x):
+        calls.append(x)
+
+    run(
+        "log(read_secret())",
+        {"read_secret": read_secret, "log": log},
+        sources=frozenset({"read_secret"}),
+    )
+    assert calls == ["sk-secret"]

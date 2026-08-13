@@ -19,20 +19,50 @@ forms), not relaxing the whitelist check.
 
 ## What didn't come over from provenance-ac, on purpose
 
-The object-identity provenance mechanism, `ProvenanceStr` and the side
-table, is specific to retrofitting tracking onto unrestricted Python
-execution. A custom interpreter doesn't need it: capability metadata can
-be attached directly to this interpreter's own values, since every
-operation the language supports is one this interpreter's author defined
-in the first place.
+`provenance-ac` enforces sinks and sources by wrapping specific dangerous
+callables directly (`requests.get`/`post`, `subprocess.run`/`Popen`,
+`open`) and tracks taint by Python object identity (`ProvenanceStr`, the
+side table). Both are enumerative: safety depends on every dangerous
+entry point having been identified and wrapped, and tracking survives
+only as long as a tainted value's object identity survives. Neither
+holds in general — the project's own AgentDojo integration hit this
+directly. Tool output there gets serialized to a string and re-parsed by
+`json.loads()` into a new object with no identity link to the original,
+so `id()`-based matching can't see it; `benchmarks/agentdojo_adapter.py`
+had to fall back to content matching instead.
+
+A closed interpreter doesn't have that class of gap. Nothing can execute
+except what `eval_node`/`exec_stmt` explicitly implement, so there's no
+"did we remember to wrap this sink" question — an unhandled path to a
+privileged operation isn't missed, it doesn't exist, by construction, not
+by coverage effort. And since the interpreter owns its own variable
+bindings (`env`) rather than relying on Python's object identity, taint
+can be tracked through the interpreter's own bookkeeping instead of
+`id()`, sidestepping the exact fragility that broke object-identity
+tracking against AgentDojo. The tradeoff is real: this only works because
+the language is small enough to fully enumerate every operation it can
+perform, a far smaller surface than unrestricted Python.
 
 ## Status
 
 Parsing, dispatch, assignment, and if/else conditionals exist, each with
-a passing and a rejected-case test. No capability/taint system and no
-shared store yet. The immediate next step is testing whether an
-open-weight model can reliably generate valid syntax for this grammar,
-before building it out further.
+a passing and a rejected-case test. The feasibility question — can an
+open-weight model reliably generate valid syntax for this grammar — has
+a first real answer across two 3B models (`llama3.2:3b` 72% correct,
+`qwen2.5:3b` 60%, 5 tasks x 5 reps each, `feasibility_test.py`), with
+failures cleanly split between invalid syntax, valid Python outside this
+grammar (the model reaching for constructs like the walrus operator or
+ternary expressions), and legal-but-wrong-behavior programs.
+
+A minimal capability system now exists: every value carries a Trust tag
+(`TRUSTED`/`TAINTED`) threaded through `eval_node`/`exec_stmt`, not
+attached via object identity. `sources` names whitelisted functions whose
+return value is always tainted; `privileged` names whitelisted functions
+that refuse to run at all if any argument is tainted, raising
+`CapabilityError` before the underlying call happens. This is single-hop
+only — a tainted value passed through an ordinary function comes back
+untainted, since propagation through arbitrary computation isn't tracked
+yet. No shared store yet; that's next.
 
 ```bash
 pip install pytest

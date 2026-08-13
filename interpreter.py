@@ -28,12 +28,28 @@ sites only) and `env` (variables bound by assignment, checked at name-read
 sites only). A bare reference to a whitelisted function name is not a
 variable read and is rejected, same as before this file supported
 variables at all.
+
+Capability tracking: every value this interpreter produces carries a
+Trust tag (TRUSTED or TAINTED) alongside it, threaded through eval_node
+and exec_stmt rather than attached via object identity -- there's no
+side table, because the interpreter owns every value's lifecycle itself.
+`sources` names a subset of `allowed` whose return value is always
+TAINTED, regardless of its arguments. `privileged` names a subset of
+`allowed` that refuses to run at all if any argument is TAINTED, raising
+CapabilityError before the underlying function is ever called. This is
+single-hop only: a TAINTED value passed through an ordinary (non-source,
+non-privileged) function returns a fresh TRUSTED result, since nothing
+here yet tracks propagation through arbitrary computation. Multi-hop
+propagation, sanitization, and confidentiality (the reverse direction:
+stopping sensitive data reaching an untrusted sink) are explicitly not
+handled yet.
 """
 
 from __future__ import annotations
 
 import ast
 import operator
+from enum import Enum
 from typing import Any, Callable
 
 _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
@@ -46,25 +62,58 @@ _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
 }
 
 
+class Trust(Enum):
+    TRUSTED = "trusted"
+    TAINTED = "tainted"
+
+
 class InterpreterError(Exception):
     pass
 
 
-def eval_node(node: ast.AST, allowed: dict[str, Callable], env: dict[str, Any]) -> Any:
+class CapabilityError(InterpreterError):
+    """Raised when a TAINTED value reaches a privileged operation. A
+    subclass of InterpreterError so existing callers that catch the
+    whitelist-boundary error also catch this, while code that cares can
+    still distinguish the two."""
+
+
+def eval_node(
+    node: ast.AST,
+    allowed: dict[str, Callable],
+    env: dict[str, tuple[Any, Trust]],
+    sources: frozenset[str] = frozenset(),
+    privileged: frozenset[str] = frozenset(),
+) -> tuple[Any, Trust]:
     """Evaluates a single expression node: a call, a constant, a variable
     read, or a single comparison. Each case is explicit; anything else
-    raises rather than falling back to a general evaluator."""
+    raises rather than falling back to a general evaluator. Returns
+    (value, trust), not a bare value -- every expression in this
+    language carries a Trust tag alongside its value."""
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
             raise InterpreterError("calls must be a plain function name")
         name = node.func.id
         if name not in allowed:
             raise InterpreterError(f"unknown or disallowed name: {name}")
-        args = [eval_node(a, allowed, env) for a in node.args]
-        kwargs = {kw.arg: eval_node(kw.value, allowed, env) for kw in node.keywords}
-        return allowed[name](*args, **kwargs)
+        arg_results = [eval_node(a, allowed, env, sources, privileged) for a in node.args]
+        kwarg_results = {
+            kw.arg: eval_node(kw.value, allowed, env, sources, privileged)
+            for kw in node.keywords
+        }
+        if name in privileged:
+            arg_trusts = [t for _, t in arg_results] + [t for _, t in kwarg_results.values()]
+            if Trust.TAINTED in arg_trusts:
+                raise CapabilityError(
+                    f"privileged operation {name!r} called with a tainted argument"
+                )
+        args = [v for v, _ in arg_results]
+        kwargs = {k: v for k, (v, _) in kwarg_results.items()}
+        result = allowed[name](*args, **kwargs)
+        result_trust = Trust.TAINTED if name in sources else Trust.TRUSTED
+        return result, result_trust
     if isinstance(node, ast.Constant):
-        return node.value
+        return node.value, Trust.TRUSTED
     if isinstance(node, ast.Name):
         if not isinstance(node.ctx, ast.Load):
             raise InterpreterError(f"unsupported name usage: {ast.dump(node)}")
@@ -77,41 +126,56 @@ def eval_node(node: ast.AST, allowed: dict[str, Callable], env: dict[str, Any]) 
         op_type = type(node.ops[0])
         if op_type not in _COMPARE_OPS:
             raise InterpreterError(f"unsupported comparison operator: {op_type.__name__}")
-        left = eval_node(node.left, allowed, env)
-        right = eval_node(node.comparators[0], allowed, env)
-        return _COMPARE_OPS[op_type](left, right)
+        left, _ = eval_node(node.left, allowed, env, sources, privileged)
+        right, _ = eval_node(node.comparators[0], allowed, env, sources, privileged)
+        return _COMPARE_OPS[op_type](left, right), Trust.TRUSTED
     raise InterpreterError(f"unsupported expression: {ast.dump(node)}")
 
 
-def exec_stmt(node: ast.stmt, allowed: dict[str, Callable], env: dict[str, Any]) -> Any:
+def exec_stmt(
+    node: ast.stmt,
+    allowed: dict[str, Callable],
+    env: dict[str, tuple[Any, Trust]],
+    sources: frozenset[str] = frozenset(),
+    privileged: frozenset[str] = frozenset(),
+) -> tuple[Any, Trust] | None:
     """Executes a single statement node: an assignment, a conditional, or
-    an expression statement. Returns the expression's value for an
-    expr_stmt, None otherwise. Unsupported statement types (imports, def,
-    for, while, class, ...) raise rather than being silently skipped."""
+    an expression statement. Returns (value, trust) for an expr_stmt,
+    None otherwise. Unsupported statement types (imports, def, for,
+    while, class, ...) raise rather than being silently skipped."""
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
-        env[node.targets[0].id] = eval_node(node.value, allowed, env)
+        env[node.targets[0].id] = eval_node(node.value, allowed, env, sources, privileged)
         return None
     if isinstance(node, ast.If):
-        branch = node.body if eval_node(node.test, allowed, env) else node.orelse
+        test_value, _ = eval_node(node.test, allowed, env, sources, privileged)
+        branch = node.body if test_value else node.orelse
         result = None
         for stmt in branch:
-            result = exec_stmt(stmt, allowed, env)
+            result = exec_stmt(stmt, allowed, env, sources, privileged)
         return result
     if isinstance(node, ast.Expr):
-        return eval_node(node.value, allowed, env)
+        return eval_node(node.value, allowed, env, sources, privileged)
     raise InterpreterError(f"unsupported statement: {ast.dump(node)}")
 
 
-def run(source: str, allowed: dict[str, Callable], env: dict[str, Any] | None = None) -> Any:
+def run(
+    source: str,
+    allowed: dict[str, Callable],
+    env: dict[str, tuple[Any, Trust]] | None = None,
+    *,
+    sources: frozenset[str] = frozenset(),
+    privileged: frozenset[str] = frozenset(),
+) -> Any:
     """Parses source with ast.parse in exec mode (so multiple statements
     and assignment/if are syntactically available) and executes each
     top-level statement through exec_stmt. Never calls eval() on the
-    source itself. Returns the value of the last expression statement, or
-    None if the program ended on an assignment or empty branch. A
-    malformed program raises InterpreterError rather than executing
-    anything."""
+    source itself. Returns the bare value of the last expression
+    statement (the Trust tag is unwrapped here, not exposed to callers),
+    or None if the program ended on an assignment or empty branch. A
+    malformed program raises InterpreterError; a TAINTED value reaching a
+    name in `privileged` raises CapabilityError, a subclass of it."""
     try:
         tree = ast.parse(source, mode="exec")
     except SyntaxError as exc:
@@ -120,5 +184,5 @@ def run(source: str, allowed: dict[str, Callable], env: dict[str, Any] | None = 
         env = {}
     result = None
     for stmt in tree.body:
-        result = exec_stmt(stmt, allowed, env)
-    return result
+        result = exec_stmt(stmt, allowed, env, sources, privileged)
+    return result[0] if result is not None else None
