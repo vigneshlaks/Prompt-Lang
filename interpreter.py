@@ -30,14 +30,14 @@ variable read and is rejected, same as before this file supported
 variables at all.
 
 Capability tracking: every value this interpreter produces carries a
-Trust tag (TRUSTED or TAINTED) alongside it, threaded through eval_node
+Trust tag (TRUSTED or UNTRUSTED) alongside it, threaded through eval_node
 and exec_stmt rather than attached via object identity -- there's no
 side table, because the interpreter owns every value's lifecycle itself.
 `sources` names a subset of `allowed` whose return value is always
-TAINTED, regardless of its arguments. `privileged` names a subset of
-`allowed` that refuses to run at all if any argument is TAINTED, raising
+UNTRUSTED, regardless of its arguments. `privileged` names a subset of
+`allowed` that refuses to run at all if any argument is UNTRUSTED, raising
 CapabilityError before the underlying function is ever called. This is
-single-hop only: a TAINTED value passed through an ordinary (non-source,
+single-hop only: an UNTRUSTED value passed through an ordinary (non-source,
 non-privileged) function returns a fresh TRUSTED result, since nothing
 here yet tracks propagation through arbitrary computation. Multi-hop
 propagation, sanitization, and confidentiality (the reverse direction:
@@ -64,7 +64,7 @@ _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
 
 class Trust(Enum):
     TRUSTED = "trusted"
-    TAINTED = "tainted"
+    UNTRUSTED = "untrusted"
 
 
 class InterpreterError(Exception):
@@ -72,7 +72,7 @@ class InterpreterError(Exception):
 
 
 class CapabilityError(InterpreterError):
-    """Raised when a TAINTED value reaches a privileged operation. A
+    """Raised when an UNTRUSTED value reaches a privileged operation. A
     subclass of InterpreterError so existing callers that catch the
     whitelist-boundary error also catch this, while code that cares can
     still distinguish the two."""
@@ -103,14 +103,14 @@ def eval_node(
         }
         if name in privileged:
             arg_trusts = [t for _, t in arg_results] + [t for _, t in kwarg_results.values()]
-            if Trust.TAINTED in arg_trusts:
+            if Trust.UNTRUSTED in arg_trusts:
                 raise CapabilityError(
-                    f"privileged operation {name!r} called with a tainted argument"
+                    f"privileged operation {name!r} called with an untrusted argument"
                 )
         args = [v for v, _ in arg_results]
         kwargs = {k: v for k, (v, _) in kwarg_results.items()}
         result = allowed[name](*args, **kwargs)
-        result_trust = Trust.TAINTED if name in sources else Trust.TRUSTED
+        result_trust = Trust.UNTRUSTED if name in sources else Trust.TRUSTED
         return result, result_trust
     if isinstance(node, ast.Constant):
         return node.value, Trust.TRUSTED
@@ -174,7 +174,7 @@ def run(
     source itself. Returns the bare value of the last expression
     statement (the Trust tag is unwrapped here, not exposed to callers),
     or None if the program ended on an assignment or empty branch. A
-    malformed program raises InterpreterError; a TAINTED value reaching a
+    malformed program raises InterpreterError; an UNTRUSTED value reaching a
     name in `privileged` raises CapabilityError, a subclass of it."""
     try:
         tree = ast.parse(source, mode="exec")

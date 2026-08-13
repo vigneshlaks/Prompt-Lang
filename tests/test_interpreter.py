@@ -103,12 +103,12 @@ def test_trusted_value_allowed_into_privileged_op():
     assert calls == [5]
 
 
-def test_tainted_value_blocked_from_privileged_op():
+def test_untrusted_value_blocked_from_privileged_op():
     def read_secret():
         return "sk-secret"
 
     def approve(x):
-        raise AssertionError("must not be called with a tainted argument")
+        raise AssertionError("must not be called with an untrusted argument")
 
     with pytest.raises(CapabilityError):
         run(
@@ -119,12 +119,12 @@ def test_tainted_value_blocked_from_privileged_op():
         )
 
 
-def test_tainted_value_still_blocked_after_passing_through_a_variable():
+def test_untrusted_value_still_blocked_after_passing_through_a_variable():
     def read_secret():
         return "sk-secret"
 
     def approve(x):
-        raise AssertionError("must not be called with a tainted argument")
+        raise AssertionError("must not be called with an untrusted argument")
 
     with pytest.raises(CapabilityError):
         run(
@@ -135,7 +135,7 @@ def test_tainted_value_still_blocked_after_passing_through_a_variable():
         )
 
 
-def test_tainted_value_allowed_into_a_non_privileged_function():
+def test_untrusted_value_allowed_into_a_non_privileged_function():
     calls = []
 
     def read_secret():
@@ -169,7 +169,7 @@ def test_planted_value_in_shared_store_blocks_privileged_op():
     store["inbox"] = "attacker-controlled payload"
 
     def approve(x):
-        raise AssertionError("must not be called with a tainted argument")
+        raise AssertionError("must not be called with an untrusted argument")
 
     with pytest.raises(CapabilityError):
         run(
@@ -200,7 +200,7 @@ def test_write_then_read_own_shared_value_still_blocked_from_privileged_op():
     store, write_shared, read_shared = _make_shared_store()
 
     def approve(x):
-        raise AssertionError("must not be called with a tainted argument")
+        raise AssertionError("must not be called with an untrusted argument")
 
     with pytest.raises(CapabilityError):
         run(
@@ -209,3 +209,94 @@ def test_write_then_read_own_shared_value_still_blocked_from_privileged_op():
             sources=frozenset({"read_shared"}),
             privileged=frozenset({"approve"}),
         )
+
+
+def test_untrusted_value_still_blocked_inside_a_conditional_branch():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "if 1 == 1:\n    x = read_secret()\n    approve(x)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_untrusted_value_blocked_as_a_keyword_argument():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(value):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(value=read_secret())",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_result_of_a_non_source_function_is_allowed_into_privileged_op():
+    calls = []
+
+    def get_config():
+        return "default-mode"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "approve(get_config())",
+        {"get_config": get_config, "approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == ["default-mode"]
+
+
+def test_untrusted_value_that_never_reaches_privileged_op_is_not_blocked():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def log(x):
+        calls.append(x)
+
+    def approve(x):
+        raise AssertionError("must not be called at all in this scenario")
+
+    run(
+        "x = read_secret()\nlog(x)",
+        {"read_secret": read_secret, "log": log, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == ["sk-secret"]
+
+
+def test_untrusted_value_used_only_in_comparison_is_not_blocked():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def notify():
+        calls.append("notified")
+
+    def approve(x):
+        raise AssertionError("must not be called at all in this scenario")
+
+    run(
+        "if read_secret() == 'sk-secret':\n    notify()",
+        {"read_secret": read_secret, "notify": notify, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == ["notified"]
