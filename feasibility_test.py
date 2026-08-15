@@ -34,10 +34,11 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 
 GRAMMAR = """\
 program    := statement*
-statement  := assign | if_stmt | expr_stmt
+statement  := assign | if_stmt | while_stmt | expr_stmt
 assign     := NAME "=" expr
 if_stmt    := "if" expr ":" NEWLINE INDENT statement+ DEDENT
               ("else" ":" NEWLINE INDENT statement+ DEDENT)?
+while_stmt := "while" expr ":" NEWLINE INDENT statement+ DEDENT
 expr_stmt  := expr
 expr       := call | compare | NAME | literal
 call       := NAME "(" (expr ("," expr)*)? ")"
@@ -53,6 +54,14 @@ if get_score() >= 50:
     pass_test()
 else:
     fail_test()
+
+Example task: "Get a value with get_value(). While it is less than 3, \
+reassign it to the result of bump(value). Then call done(value)."
+Example program:
+x = get_value()
+while x < 3:
+    x = bump(x)
+done(x)
 """
 
 
@@ -197,12 +206,38 @@ def _branching_compute_task() -> Task:
     )
 
 
+def _loop_count_task() -> Task:
+    def make_allowed(calls):
+        return {
+            "get_start": _logging_stub("get_start", calls, return_value=0),
+            "increment": lambda x: x + 1,
+            "finish": _logging_stub("finish", calls),
+        }
+
+    def check(calls):
+        finish_calls = [c for c in calls if c[0] == "finish"]
+        return len(finish_calls) == 1 and finish_calls[0][1] == (5,)
+
+    return Task(
+        name="loop_count",
+        description=(
+            "Get a starting value with get_start(). While the value is "
+            "less than 5, reassign it to the result of increment(value). "
+            "Then pass the final value to finish()."
+        ),
+        functions=["get_start", "increment", "finish"],
+        make_allowed=make_allowed,
+        check=check,
+    )
+
+
 TASKS = [
     _balance_task(),
     _admin_task(),
     _chain_task(),
     _score_equality_task(),
     _branching_compute_task(),
+    _loop_count_task(),
 ]
 
 
@@ -213,8 +248,8 @@ grammar is valid:
 
 {GRAMMAR}
 The only functions available for this task are: {", ".join(task.functions)}.
-Do not use any other functions, operators, or statements (no loops, no \
-imports, no arithmetic operators, no attribute access).
+Do not use any other functions, operators, or statements (no imports, \
+no arithmetic operators, no attribute access, no for loops).
 
 {FEW_SHOT}
 Task: {task.description}
@@ -292,13 +327,18 @@ def main() -> None:
     parser.add_argument(
         "--out", default="feasibility_results.jsonl", help="output log path"
     )
+    parser.add_argument(
+        "--tasks", nargs="+", default=None, help="only run these task names"
+    )
     args = parser.parse_args()
+
+    tasks_to_run = [t for t in TASKS if args.tasks is None or t.name in args.tasks]
 
     out_path = Path(args.out)
     results = []
     with out_path.open("w") as f:
         for model in args.models:
-            for task in TASKS:
+            for task in tasks_to_run:
                 for rep in range(args.reps):
                     try:
                         result = attempt(model, task)
