@@ -75,34 +75,6 @@ from a privileged call using data it wrote to the store itself earlier in
 the same run, since every read from a shared store is treated as
 untrusted regardless of who wrote it.
 
-## Next steps
-
-Five things are queued, roughly in the order that unblocks the most.
-
-Loops. The grammar covers function calls, assignment, and if/else, with
-no way to repeat anything. This is the largest gap between a toy grammar
-and a language someone could write real programs in. Adding it follows
-the existing pattern: one more node type handled explicitly in
-`eval_node`/`exec_stmt`, not a new mechanism.
-
-Sanitization. Nothing in the interpreter can currently turn an untrusted
-value back to trusted on purpose. Without it, the capability system can
-only block or allow, not clean a value and then use it.
-
-Confidentiality. The interpreter stops untrusted data from reaching a
-privileged operation. It does not yet stop trusted or sensitive data from
-reaching an untrusted sink, the reverse direction, which is unbuilt.
-
-Testing against a real codebase. `provenance-ac` was tested against a
-vendored copy of a real tool, `mcp-server-git`, in its `target/`
-directory, not just synthetic examples. `prompt-lang` hasn't had an
-equivalent test yet.
-
-A larger feasibility test. The current run covers five tasks and five
-reps per model, enough to see a gap between 3B and 32B models. More tasks
-would show whether that gap holds generally or was specific to these
-five.
-
 ```bash
 pip install pytest
 pytest tests/ -v
