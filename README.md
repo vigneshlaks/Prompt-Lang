@@ -48,11 +48,16 @@ perform, a far smaller surface than unrestricted Python.
 Parsing, dispatch, assignment, and if/else conditionals exist, each with
 a passing and a rejected-case test. The feasibility question — can an
 open-weight model reliably generate valid syntax for this grammar — has
-a first real answer across two 3B models (`llama3.2:3b` 72% correct,
-`qwen2.5:3b` 60%, 5 tasks x 5 reps each, `feasibility_test.py`), with
-failures cleanly split between invalid syntax, valid Python outside this
-grammar (the model reaching for constructs like the walrus operator or
-ternary expressions), and legal-but-wrong-behavior programs.
+a real answer across three models, 5 tasks x 5 reps each
+(`feasibility_test.py`): `llama3.2:3b` 80% correct, `qwen2.5:3b` 56%,
+and `qwen2.5:32b` 100%, run on a rented A40 GPU since the 32B model
+doesn't fit on this machine's 8GB of RAM. Failures on the two 3B models
+cleanly split between invalid syntax, valid Python outside this grammar
+(the model reaching for constructs like the walrus operator or ternary
+expressions), and legal-but-wrong-behavior programs; the 32B model
+produced none of these across all 25 attempts. The gap between 3B and
+32B is the first real evidence that the earlier 3B failures were a
+capability ceiling, not a fixable prompting issue.
 
 A minimal capability system now exists: every value carries a Trust tag
 (`TRUSTED`/`UNTRUSTED`) threaded through `eval_node`/`exec_stmt`, not
