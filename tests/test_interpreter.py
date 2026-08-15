@@ -281,6 +281,61 @@ def test_untrusted_value_that_never_reaches_privileged_op_is_not_blocked():
     assert calls == ["sk-secret"]
 
 
+def test_untrusted_value_propagates_through_a_chain_of_ordinary_functions():
+    def read_secret():
+        return "sk-secret"
+
+    def wrap(x):
+        return f"[{x}]"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(wrap(wrap(read_secret())))",
+            {"read_secret": read_secret, "wrap": wrap, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_trusted_value_through_ordinary_function_chain_stays_trusted():
+    calls = []
+
+    def wrap(x):
+        return f"[{x}]"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "approve(wrap(wrap(5)))",
+        {"wrap": wrap, "approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == ["[[5]]"]
+
+
+def test_ordinary_function_result_is_untrusted_if_any_argument_is_untrusted():
+    def read_secret():
+        return "sk-secret"
+
+    def combine(a, b):
+        return f"{a}-{b}"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(combine('safe', read_secret()))",
+            {"read_secret": read_secret, "combine": combine, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
 def test_untrusted_value_used_only_in_comparison_is_not_blocked():
     calls = []
 

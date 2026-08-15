@@ -36,13 +36,13 @@ side table, because the interpreter owns every value's lifecycle itself.
 `sources` names a subset of `allowed` whose return value is always
 UNTRUSTED, regardless of its arguments. `privileged` names a subset of
 `allowed` that refuses to run at all if any argument is UNTRUSTED, raising
-CapabilityError before the underlying function is ever called. This is
-single-hop only: an UNTRUSTED value passed through an ordinary (non-source,
-non-privileged) function returns a fresh TRUSTED result, since nothing
-here yet tracks propagation through arbitrary computation. Multi-hop
-propagation, sanitization, and confidentiality (the reverse direction:
-stopping sensitive data reaching an untrusted sink) are explicitly not
-handled yet.
+CapabilityError before the underlying function is ever called. An
+ordinary (non-source, non-privileged) function propagates trust from its
+arguments: UNTRUSTED in, UNTRUSTED out, through any chain of calls, since
+eval_node evaluates arguments recursively before combining their trust.
+Sanitization (a function that can turn UNTRUSTED into TRUSTED on purpose)
+and confidentiality (the reverse direction: stopping sensitive data from
+reaching an untrusted sink) are explicitly not handled yet.
 """
 
 from __future__ import annotations
@@ -101,16 +101,18 @@ def eval_node(
             kw.arg: eval_node(kw.value, allowed, env, sources, privileged)
             for kw in node.keywords
         }
-        if name in privileged:
-            arg_trusts = [t for _, t in arg_results] + [t for _, t in kwarg_results.values()]
-            if Trust.UNTRUSTED in arg_trusts:
-                raise CapabilityError(
-                    f"privileged operation {name!r} called with an untrusted argument"
-                )
+        arg_trusts = [t for _, t in arg_results] + [t for _, t in kwarg_results.values()]
+        if name in privileged and Trust.UNTRUSTED in arg_trusts:
+            raise CapabilityError(
+                f"privileged operation {name!r} called with an untrusted argument"
+            )
         args = [v for v, _ in arg_results]
         kwargs = {k: v for k, (v, _) in kwarg_results.items()}
         result = allowed[name](*args, **kwargs)
-        result_trust = Trust.UNTRUSTED if name in sources else Trust.TRUSTED
+        if name in sources or Trust.UNTRUSTED in arg_trusts:
+            result_trust = Trust.UNTRUSTED
+        else:
+            result_trust = Trust.TRUSTED
         return result, result_trust
     if isinstance(node, ast.Constant):
         return node.value, Trust.TRUSTED

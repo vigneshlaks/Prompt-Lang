@@ -48,34 +48,32 @@ perform, a far smaller surface than unrestricted Python.
 Parsing, dispatch, assignment, and if/else conditionals exist, each with
 a passing and a rejected-case test. The feasibility question — can an
 open-weight model reliably generate valid syntax for this grammar — has
-a real answer across three models, 5 tasks x 5 reps each
-(`feasibility_test.py`): `llama3.2:3b` 80% correct, `qwen2.5:3b` 56%,
-and `qwen2.5:32b` 100%, run on a rented A40 GPU since the 32B model
-doesn't fit on this machine's 8GB of RAM. Failures on the two 3B models
-cleanly split between invalid syntax, valid Python outside this grammar
-(the model reaching for constructs like the walrus operator or ternary
-expressions), and legal-but-wrong-behavior programs; the 32B model
-produced none of these across all 25 attempts. The gap between 3B and
-32B is the first real evidence that the earlier 3B failures were a
-capability ceiling, not a fixable prompting issue.
+a first real answer across two 3B models (`llama3.2:3b` 72% correct,
+`qwen2.5:3b` 60%, 5 tasks x 5 reps each, `feasibility_test.py`), with
+failures cleanly split between invalid syntax, valid Python outside this
+grammar (the model reaching for constructs like the walrus operator or
+ternary expressions), and legal-but-wrong-behavior programs.
 
 A minimal capability system now exists: every value carries a Trust tag
 (`TRUSTED`/`UNTRUSTED`) threaded through `eval_node`/`exec_stmt`, not
 attached via object identity. `sources` names whitelisted functions whose
 return value is always untrusted; `privileged` names whitelisted functions
 that refuse to run at all if any argument is untrusted, raising
-`CapabilityError` before the underlying call happens. This is single-hop
-only — an untrusted value passed through an ordinary function comes back
-trusted again, since propagation through arbitrary computation isn't tracked
-yet.
+`CapabilityError` before the underlying call happens. Trust now propagates
+through ordinary functions too — an untrusted value passed through any
+chain of non-source, non-privileged calls stays untrusted, since each call
+combines its own source-tag with the trust of its arguments rather than
+resetting to trusted. Sanitization (a function that deliberately turns
+untrusted into trusted) and the reverse direction, confidentiality, aren't
+handled yet.
 
-A single-hop shared-store test confirms the mechanism against a stateful
-store, not just a stateless stub: a planted value blocks a downstream
-privileged call, an unrelated non-privileged call using shared-store data
-is unaffected, and — the case worth calling out — a program is still
-blocked from a privileged call using data it wrote to the store itself
-earlier in the same run, since every read from a shared store is treated
-as untrusted regardless of who wrote it.
+A shared-store test confirms the mechanism against a stateful store, not
+just a stateless stub: a planted value blocks a downstream privileged
+call, an unrelated non-privileged call using shared-store data is
+unaffected, and — the case worth calling out — a program is still blocked
+from a privileged call using data it wrote to the store itself earlier in
+the same run, since every read from a shared store is treated as
+untrusted regardless of who wrote it.
 
 ```bash
 pip install pytest
