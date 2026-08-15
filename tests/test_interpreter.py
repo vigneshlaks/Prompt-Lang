@@ -93,6 +93,85 @@ def test_unsupported_statement_inside_branch_is_rejected():
         run("if 1 == 1:\n    import os", {})
 
 
+def test_sanitizer_result_is_trusted_regardless_of_argument_trust():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def sanitize(x):
+        return "cleaned"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "approve(sanitize(read_secret()))",
+        {"read_secret": read_secret, "sanitize": sanitize, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+        sanitizers=frozenset({"sanitize"}),
+    )
+    assert calls == ["cleaned"]
+
+
+def test_untrusted_value_still_blocked_when_sanitizer_is_not_called():
+    def read_secret():
+        return "sk-secret"
+
+    def sanitize(x):
+        return "cleaned"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(read_secret())",
+            {"read_secret": read_secret, "sanitize": sanitize, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+            sanitizers=frozenset({"sanitize"}),
+        )
+
+
+def test_function_not_named_as_sanitizer_does_not_clear_trust():
+    def read_secret():
+        return "sk-secret"
+
+    def wrap(x):
+        return f"[{x}]"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(wrap(read_secret()))",
+            {"read_secret": read_secret, "wrap": wrap, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+            sanitizers=frozenset(),
+        )
+
+
+def test_source_wins_when_a_name_is_both_source_and_sanitizer():
+    def confused():
+        return "value"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(confused())",
+            {"confused": confused, "approve": approve},
+            sources=frozenset({"confused"}),
+            privileged=frozenset({"approve"}),
+            sanitizers=frozenset({"confused"}),
+        )
+
+
 def test_while_loop_executes_body_while_condition_true():
     calls = []
 

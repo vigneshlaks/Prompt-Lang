@@ -38,12 +38,18 @@ side table, because the interpreter owns every value's lifecycle itself.
 UNTRUSTED, regardless of its arguments. `privileged` names a subset of
 `allowed` that refuses to run at all if any argument is UNTRUSTED, raising
 CapabilityError before the underlying function is ever called. An
-ordinary (non-source, non-privileged) function propagates trust from its
-arguments: UNTRUSTED in, UNTRUSTED out, through any chain of calls, since
-eval_node evaluates arguments recursively before combining their trust.
-Sanitization (a function that can turn UNTRUSTED into TRUSTED on purpose)
-and confidentiality (the reverse direction: stopping sensitive data from
-reaching an untrusted sink) are explicitly not handled yet.
+ordinary (non-source, non-privileged, non-sanitizer) function propagates
+trust from its arguments: UNTRUSTED in, UNTRUSTED out, through any chain
+of calls, since eval_node evaluates arguments recursively before
+combining their trust. `sanitizers` names a subset of `allowed` whose
+return value is always TRUSTED, regardless of its arguments -- the one
+deliberate, explicitly declared way for a program to turn UNTRUSTED back
+into TRUSTED. Only a name explicitly listed in `sanitizers` has this
+effect; nothing about a function's behavior implies it. If a name is in
+both `sources` and `sanitizers`, `sources` wins, since the untrusted
+outcome is the safer one to prefer when the configuration itself is
+contradictory. Confidentiality (the reverse direction: stopping sensitive
+data from reaching an untrusted sink) is explicitly not handled yet.
 
 while loops are bounded: a loop that runs past MAX_WHILE_ITERATIONS raises
 InterpreterError rather than running forever. An agent-executed language
@@ -92,6 +98,7 @@ def eval_node(
     env: dict[str, tuple[Any, Trust]],
     sources: frozenset[str] = frozenset(),
     privileged: frozenset[str] = frozenset(),
+    sanitizers: frozenset[str] = frozenset(),
 ) -> tuple[Any, Trust]:
     """Evaluates a single expression node: a call, a constant, a variable
     read, or a single comparison. Each case is explicit; anything else
@@ -104,9 +111,11 @@ def eval_node(
         name = node.func.id
         if name not in allowed:
             raise InterpreterError(f"unknown or disallowed name: {name}")
-        arg_results = [eval_node(a, allowed, env, sources, privileged) for a in node.args]
+        arg_results = [
+            eval_node(a, allowed, env, sources, privileged, sanitizers) for a in node.args
+        ]
         kwarg_results = {
-            kw.arg: eval_node(kw.value, allowed, env, sources, privileged)
+            kw.arg: eval_node(kw.value, allowed, env, sources, privileged, sanitizers)
             for kw in node.keywords
         }
         arg_trusts = [t for _, t in arg_results] + [t for _, t in kwarg_results.values()]
@@ -117,7 +126,11 @@ def eval_node(
         args = [v for v, _ in arg_results]
         kwargs = {k: v for k, (v, _) in kwarg_results.items()}
         result = allowed[name](*args, **kwargs)
-        if name in sources or Trust.UNTRUSTED in arg_trusts:
+        if name in sources:
+            result_trust = Trust.UNTRUSTED
+        elif name in sanitizers:
+            result_trust = Trust.TRUSTED
+        elif Trust.UNTRUSTED in arg_trusts:
             result_trust = Trust.UNTRUSTED
         else:
             result_trust = Trust.TRUSTED
@@ -136,8 +149,8 @@ def eval_node(
         op_type = type(node.ops[0])
         if op_type not in _COMPARE_OPS:
             raise InterpreterError(f"unsupported comparison operator: {op_type.__name__}")
-        left, _ = eval_node(node.left, allowed, env, sources, privileged)
-        right, _ = eval_node(node.comparators[0], allowed, env, sources, privileged)
+        left, _ = eval_node(node.left, allowed, env, sources, privileged, sanitizers)
+        right, _ = eval_node(node.comparators[0], allowed, env, sources, privileged, sanitizers)
         return _COMPARE_OPS[op_type](left, right), Trust.TRUSTED
     raise InterpreterError(f"unsupported expression: {ast.dump(node)}")
 
@@ -148,6 +161,7 @@ def exec_stmt(
     env: dict[str, tuple[Any, Trust]],
     sources: frozenset[str] = frozenset(),
     privileged: frozenset[str] = frozenset(),
+    sanitizers: frozenset[str] = frozenset(),
 ) -> tuple[Any, Trust] | None:
     """Executes a single statement node: an assignment, a conditional, a
     while loop, or an expression statement. Returns (value, trust) for an
@@ -156,21 +170,23 @@ def exec_stmt(
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
-        env[node.targets[0].id] = eval_node(node.value, allowed, env, sources, privileged)
+        env[node.targets[0].id] = eval_node(
+            node.value, allowed, env, sources, privileged, sanitizers
+        )
         return None
     if isinstance(node, ast.If):
-        test_value, _ = eval_node(node.test, allowed, env, sources, privileged)
+        test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
         branch = node.body if test_value else node.orelse
         result = None
         for stmt in branch:
-            result = exec_stmt(stmt, allowed, env, sources, privileged)
+            result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
         return result
     if isinstance(node, ast.While):
         if node.orelse:
             raise InterpreterError("while/else is not supported")
         result = None
         iterations = 0
-        test_value, _ = eval_node(node.test, allowed, env, sources, privileged)
+        test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
         while test_value:
             iterations += 1
             if iterations > MAX_WHILE_ITERATIONS:
@@ -178,11 +194,11 @@ def exec_stmt(
                     f"while loop exceeded {MAX_WHILE_ITERATIONS} iterations"
                 )
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, sources, privileged)
-            test_value, _ = eval_node(node.test, allowed, env, sources, privileged)
+                result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
+            test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
         return result
     if isinstance(node, ast.Expr):
-        return eval_node(node.value, allowed, env, sources, privileged)
+        return eval_node(node.value, allowed, env, sources, privileged, sanitizers)
     raise InterpreterError(f"unsupported statement: {ast.dump(node)}")
 
 
@@ -193,6 +209,7 @@ def run(
     *,
     sources: frozenset[str] = frozenset(),
     privileged: frozenset[str] = frozenset(),
+    sanitizers: frozenset[str] = frozenset(),
 ) -> Any:
     """Parses source with ast.parse in exec mode (so multiple statements
     and assignment/if are syntactically available) and executes each
@@ -210,5 +227,5 @@ def run(
         env = {}
     result = None
     for stmt in tree.body:
-        result = exec_stmt(stmt, allowed, env, sources, privileged)
+        result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
     return result[0] if result is not None else None

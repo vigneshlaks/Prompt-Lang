@@ -52,33 +52,42 @@ capped at a fixed number of iterations (`MAX_WHILE_ITERATIONS` in
 `InterpreterError` instead of running forever, since a language a model
 writes programs in shouldn't be able to hang the process running it.
 
-A first feasibility check on the loop task specifically (`loop_count`,
-5 reps, `llama3.2:3b` and `qwen2.5:3b`, both run locally) shows a sharper
-split than the earlier five tasks: `qwen2.5:3b` got it right on every
-attempt, `llama3.2:3b` failed on all but one, consistently by trying to
-reassign the result of a function call directly
+The feasibility question — can an open-weight model reliably generate
+valid syntax for this grammar — has a real answer across three models,
+5 tasks x 5 reps each (`feasibility_test.py`): `llama3.2:3b` 80% correct,
+`qwen2.5:3b` 56%, and `qwen2.5:32b` 100%, run on a rented A40 GPU since
+the 32B model doesn't fit on this machine's 8GB of RAM. Failures split
+cleanly between invalid syntax, valid Python outside this grammar (the
+model reaching for constructs like the walrus operator or ternary
+expressions), and legal-but-wrong-behavior programs. The gap between 3B
+and 32B is the first real evidence that the earlier 3B failures are a
+capability ceiling, not a fixable prompting issue.
+
+A targeted check on the loop task specifically (`loop_count`, 5 reps,
+`llama3.2:3b` and `qwen2.5:3b`, both run locally) showed a sharper split
+than the five tasks above: `qwen2.5:3b` got it right on every attempt,
+`llama3.2:3b` failed on all but one, consistently by trying to reassign
+the result of a function call directly
 (`get_start() = increment(get_start())`) instead of tracking a local
 variable across iterations. Whether this holds past this one task is
-untested. The feasibility question — can an
-open-weight model reliably generate valid syntax for this grammar — has
-a first real answer across two 3B models (`llama3.2:3b` 72% correct,
-`qwen2.5:3b` 60%, 5 tasks x 5 reps each, `feasibility_test.py`), with
-failures cleanly split between invalid syntax, valid Python outside this
-grammar (the model reaching for constructs like the walrus operator or
-ternary expressions), and legal-but-wrong-behavior programs.
+untested.
 
 A minimal capability system now exists: every value carries a Trust tag
 (`TRUSTED`/`UNTRUSTED`) threaded through `eval_node`/`exec_stmt`, not
 attached via object identity. `sources` names whitelisted functions whose
 return value is always untrusted; `privileged` names whitelisted functions
 that refuse to run at all if any argument is untrusted, raising
-`CapabilityError` before the underlying call happens. Trust now propagates
+`CapabilityError` before the underlying call happens. Trust propagates
 through ordinary functions too — an untrusted value passed through any
 chain of non-source, non-privileged calls stays untrusted, since each call
 combines its own source-tag with the trust of its arguments rather than
-resetting to trusted. Sanitization (a function that deliberately turns
-untrusted into trusted) and the reverse direction, confidentiality, aren't
-handled yet.
+resetting to trusted. `sanitizers` names whitelisted functions whose
+return value is always trusted, regardless of its arguments — the one
+deliberate, explicitly declared way for a program to turn untrusted data
+back into trusted, kept intentionally narrow: a name has this effect only
+if it's listed, never because of what the function happens to do.
+Confidentiality, the reverse direction of stopping sensitive data from
+reaching an untrusted sink, still isn't handled.
 
 A shared-store test confirms the mechanism against a stateful store, not
 just a stateless stub: a planted value blocks a downstream privileged
