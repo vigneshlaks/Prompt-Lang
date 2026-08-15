@@ -4,7 +4,7 @@ parsing and dispatch pattern for a single tool call.
 """
 
 import pytest
-from interpreter import MAX_WHILE_ITERATIONS, CapabilityError, InterpreterError, run
+from interpreter import MAX_WHILE_ITERATIONS, CapabilityError, InterpreterError, Trust, run
 
 
 def test_simple_call_dispatches():
@@ -169,6 +169,134 @@ def test_source_wins_when_a_name_is_both_source_and_sanitizer():
             sources=frozenset({"confused"}),
             privileged=frozenset({"approve"}),
             sanitizers=frozenset({"confused"}),
+        )
+
+
+def test_list_literal_evaluates_to_a_list_of_tagged_elements():
+    result = run("[1, 2, 3]", {})
+    assert result == [(1, Trust.TRUSTED), (2, Trust.TRUSTED), (3, Trust.TRUSTED)]
+
+
+def test_subscript_reads_an_element_by_index():
+    result = run("x = [10, 20, 30]\nx[1]", {})
+    assert result == 20
+
+
+def test_subscript_out_of_range_raises():
+    with pytest.raises(InterpreterError):
+        run("x = [1, 2]\nx[5]", {})
+
+
+def test_subscript_with_non_integer_index_raises():
+    with pytest.raises(InterpreterError):
+        run("x = [1, 2]\nx['a']", {})
+
+
+def test_for_loop_iterates_over_a_list_literal():
+    calls = []
+
+    def visit(x):
+        calls.append(x)
+
+    run("for x in [1, 2, 3]:\n    visit(x)", {"visit": visit})
+    assert calls == [1, 2, 3]
+
+
+def test_for_else_is_rejected():
+    with pytest.raises(InterpreterError):
+        run("for x in [1]:\n    y = x\nelse:\n    y = 0", {})
+
+
+def test_for_loop_target_must_be_a_plain_name():
+    with pytest.raises(InterpreterError):
+        run("for x[0] in [1]:\n    pass", {})
+
+
+def test_subscripting_a_plain_list_from_an_outside_function_raises():
+    def get_raw_list():
+        return [1, 2, 3]
+
+    with pytest.raises(InterpreterError):
+        run("x = get_raw_list()\nx[0]", {"get_raw_list": get_raw_list})
+
+
+def test_for_loop_over_a_plain_list_from_an_outside_function_raises():
+    def get_raw_list():
+        return [1, 2, 3]
+
+    def visit(x):
+        pass
+
+    with pytest.raises(InterpreterError):
+        run(
+            "for x in get_raw_list():\n    visit(x)",
+            {"get_raw_list": get_raw_list, "visit": visit},
+        )
+
+
+def test_list_element_keeps_its_own_trust_when_indexed():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "items = [1, read_secret()]\napprove(items[1])",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_trusted_list_element_is_not_blocked_even_if_sibling_is_untrusted():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "items = [1, read_secret()]\napprove(items[0])",
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [1]
+
+
+def test_for_loop_preserves_per_element_trust():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "for item in [read_secret(), 1]:\n    approve(item)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_list_containing_an_untrusted_element_is_untrusted_as_a_whole():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "items = [1, read_secret()]\napprove(items)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
         )
 
 

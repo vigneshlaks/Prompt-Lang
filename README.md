@@ -12,10 +12,10 @@ parses a model's output with `ast.parse` and dispatches only through an
 explicit whitelist, never `eval()`. It's ported from `provenance-ac`'s
 `agent_demo/agent_loop.py`, which used the identical pattern for a single
 tool call. It currently supports a toy grammar of function calls,
-assignment, and if/else conditionals (see the grammar in
-`interpreter.py`'s module docstring); growing it further means adding
-more statement types to `eval_node`/`exec_stmt` (loops, more expression
-forms), not relaxing the whitelist check.
+assignment, if/else conditionals, while and for loops, and lists (see the
+grammar in `interpreter.py`'s module docstring); growing it further means
+adding more statement types to `eval_node`/`exec_stmt`, not relaxing the
+whitelist check.
 
 ## What didn't come over from provenance-ac, on purpose
 
@@ -51,6 +51,18 @@ capped at a fixed number of iterations (`MAX_WHILE_ITERATIONS` in
 `interpreter.py`); a loop whose condition never goes false raises
 `InterpreterError` instead of running forever, since a language a model
 writes programs in shouldn't be able to hang the process running it.
+
+Lists now exist too, built with a list literal, plus indexing and for
+loops. Trust is tracked per element, not per collection — a list literal
+evaluates each element normally and keeps every element's own
+(value, Trust) pair, so a list mixing trusted and untrusted items doesn't
+collapse to one tag for the whole thing; indexing and iterating both
+read that per-element structure directly. This only applies to lists
+built with a list literal inside a program. A plain Python list handed
+back by a function in `allowed` has no per-element tags, since the
+interpreter never watched it get built, so indexing or iterating over
+one raises `InterpreterError` rather than guessing at a shape that was
+never established.
 
 The feasibility question — can an open-weight model reliably generate
 valid syntax for this grammar — has a real answer across three models,

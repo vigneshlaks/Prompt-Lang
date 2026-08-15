@@ -13,15 +13,18 @@ and names, and eval() is never called on anything a model produced.
 Toy grammar supported so far (informal EBNF):
 
     program    := statement*
-    statement  := assign | if_stmt | while_stmt | expr_stmt
+    statement  := assign | if_stmt | while_stmt | for_stmt | expr_stmt
     assign     := NAME "=" expr
     if_stmt    := "if" expr ":" NEWLINE INDENT statement+ DEDENT
                   ("else" ":" NEWLINE INDENT statement+ DEDENT)?
     while_stmt := "while" expr ":" NEWLINE INDENT statement+ DEDENT
+    for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
-    expr       := call | compare | NAME | literal
+    expr       := call | compare | subscript | list_expr | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
     compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=") expr
+    subscript  := expr "[" expr "]"
+    list_expr  := "[" (expr ("," expr)*)? "]"
     literal    := NUMBER | STRING | "True" | "False" | "None"
 
 Two separate namespaces: `allowed` (whitelisted callables, checked at call
@@ -55,6 +58,17 @@ while loops are bounded: a loop that runs past MAX_WHILE_ITERATIONS raises
 InterpreterError rather than running forever. An agent-executed language
 should not be able to hang the process it runs in just because a model
 wrote a condition that never goes false.
+
+Lists carry trust per element, not as one tag for the whole collection.
+A list literal evaluates each element the normal way and stores the full
+list of (value, Trust) pairs as its value; indexing and for loops both
+read that structure directly, so a list mixing trusted and untrusted
+items keeps each item's own tag instead of collapsing to one. This only
+works for lists actually built with a list literal inside a program --
+a plain Python list handed back by a function in `allowed` has no
+per-element tags, since the interpreter never watched it get built, and
+indexing or iterating over one raises InterpreterError rather than
+guessing at a shape that was never established.
 """
 
 from __future__ import annotations
@@ -90,6 +104,24 @@ class CapabilityError(InterpreterError):
     subclass of InterpreterError so existing callers that catch the
     whitelist-boundary error also catch this, while code that cares can
     still distinguish the two."""
+
+
+def _as_tagged_list(value: Any, context: str) -> list[tuple[Any, Trust]]:
+    """Checks that value is shaped like a list this interpreter itself
+    built: a list of (value, Trust) pairs. Raises InterpreterError with a
+    clear explanation rather than letting a plain Python list (returned
+    by a function in `allowed`, with no per-element tags) fail with a
+    confusing unpacking error somewhere downstream."""
+    if not isinstance(value, list) or not all(
+        isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], Trust)
+        for item in value
+    ):
+        raise InterpreterError(
+            f"{context} requires a list built with a list literal (or a "
+            "function in `allowed` returning the same (value, Trust) pair "
+            "shape) -- a plain list has no per-element trust to read"
+        )
+    return value
 
 
 def eval_node(
@@ -152,6 +184,24 @@ def eval_node(
         left, _ = eval_node(node.left, allowed, env, sources, privileged, sanitizers)
         right, _ = eval_node(node.comparators[0], allowed, env, sources, privileged, sanitizers)
         return _COMPARE_OPS[op_type](left, right), Trust.TRUSTED
+    if isinstance(node, ast.List):
+        elements = [
+            eval_node(e, allowed, env, sources, privileged, sanitizers) for e in node.elts
+        ]
+        list_trust = Trust.UNTRUSTED if any(t == Trust.UNTRUSTED for _, t in elements) else Trust.TRUSTED
+        return elements, list_trust
+    if isinstance(node, ast.Subscript):
+        if not isinstance(node.ctx, ast.Load):
+            raise InterpreterError(f"unsupported subscript usage: {ast.dump(node)}")
+        container, _ = eval_node(node.value, allowed, env, sources, privileged, sanitizers)
+        tagged = _as_tagged_list(container, "subscripting a list")
+        index, _ = eval_node(node.slice, allowed, env, sources, privileged, sanitizers)
+        if not isinstance(index, int) or isinstance(index, bool):
+            raise InterpreterError("list index must be an integer")
+        try:
+            return tagged[index]
+        except IndexError as exc:
+            raise InterpreterError(f"list index out of range: {index}") from exc
     raise InterpreterError(f"unsupported expression: {ast.dump(node)}")
 
 
@@ -164,9 +214,10 @@ def exec_stmt(
     sanitizers: frozenset[str] = frozenset(),
 ) -> tuple[Any, Trust] | None:
     """Executes a single statement node: an assignment, a conditional, a
-    while loop, or an expression statement. Returns (value, trust) for an
-    expr_stmt, None otherwise. Unsupported statement types (imports, def,
-    for, class, ...) raise rather than being silently skipped."""
+    while loop, a for loop, or an expression statement. Returns
+    (value, trust) for an expr_stmt, None otherwise. Unsupported
+    statement types (imports, def, class, ...) raise rather than being
+    silently skipped."""
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
@@ -196,6 +247,19 @@ def exec_stmt(
             for stmt in node.body:
                 result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
             test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
+        return result
+    if isinstance(node, ast.For):
+        if node.orelse:
+            raise InterpreterError("for/else is not supported")
+        if not isinstance(node.target, ast.Name):
+            raise InterpreterError("for loop target must be a single plain name")
+        iterable, _ = eval_node(node.iter, allowed, env, sources, privileged, sanitizers)
+        tagged = _as_tagged_list(iterable, "a for loop's iterable")
+        result = None
+        for element in tagged:
+            env[node.target.id] = element
+            for stmt in node.body:
+                result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
         return result
     if isinstance(node, ast.Expr):
         return eval_node(node.value, allowed, env, sources, privileged, sanitizers)
