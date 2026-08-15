@@ -13,10 +13,11 @@ and names, and eval() is never called on anything a model produced.
 Toy grammar supported so far (informal EBNF):
 
     program    := statement*
-    statement  := assign | if_stmt | expr_stmt
+    statement  := assign | if_stmt | while_stmt | expr_stmt
     assign     := NAME "=" expr
     if_stmt    := "if" expr ":" NEWLINE INDENT statement+ DEDENT
                   ("else" ":" NEWLINE INDENT statement+ DEDENT)?
+    while_stmt := "while" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
     expr       := call | compare | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
@@ -43,6 +44,11 @@ eval_node evaluates arguments recursively before combining their trust.
 Sanitization (a function that can turn UNTRUSTED into TRUSTED on purpose)
 and confidentiality (the reverse direction: stopping sensitive data from
 reaching an untrusted sink) are explicitly not handled yet.
+
+while loops are bounded: a loop that runs past MAX_WHILE_ITERATIONS raises
+InterpreterError rather than running forever. An agent-executed language
+should not be able to hang the process it runs in just because a model
+wrote a condition that never goes false.
 """
 
 from __future__ import annotations
@@ -51,6 +57,8 @@ import ast
 import operator
 from enum import Enum
 from typing import Any, Callable
+
+MAX_WHILE_ITERATIONS = 1000
 
 _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.Eq: operator.eq,
@@ -141,10 +149,10 @@ def exec_stmt(
     sources: frozenset[str] = frozenset(),
     privileged: frozenset[str] = frozenset(),
 ) -> tuple[Any, Trust] | None:
-    """Executes a single statement node: an assignment, a conditional, or
-    an expression statement. Returns (value, trust) for an expr_stmt,
-    None otherwise. Unsupported statement types (imports, def, for,
-    while, class, ...) raise rather than being silently skipped."""
+    """Executes a single statement node: an assignment, a conditional, a
+    while loop, or an expression statement. Returns (value, trust) for an
+    expr_stmt, None otherwise. Unsupported statement types (imports, def,
+    for, class, ...) raise rather than being silently skipped."""
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
@@ -156,6 +164,22 @@ def exec_stmt(
         result = None
         for stmt in branch:
             result = exec_stmt(stmt, allowed, env, sources, privileged)
+        return result
+    if isinstance(node, ast.While):
+        if node.orelse:
+            raise InterpreterError("while/else is not supported")
+        result = None
+        iterations = 0
+        test_value, _ = eval_node(node.test, allowed, env, sources, privileged)
+        while test_value:
+            iterations += 1
+            if iterations > MAX_WHILE_ITERATIONS:
+                raise InterpreterError(
+                    f"while loop exceeded {MAX_WHILE_ITERATIONS} iterations"
+                )
+            for stmt in node.body:
+                result = exec_stmt(stmt, allowed, env, sources, privileged)
+            test_value, _ = eval_node(node.test, allowed, env, sources, privileged)
         return result
     if isinstance(node, ast.Expr):
         return eval_node(node.value, allowed, env, sources, privileged)

@@ -45,8 +45,12 @@ perform, a far smaller surface than unrestricted Python.
 
 ## Status
 
-Parsing, dispatch, assignment, and if/else conditionals exist, each with
-a passing and a rejected-case test. The feasibility question — can an
+Parsing, dispatch, assignment, if/else conditionals, and bounded while
+loops exist, each with a passing and a rejected-case test. Loops are
+capped at a fixed number of iterations (`MAX_WHILE_ITERATIONS` in
+`interpreter.py`); a loop whose condition never goes false raises
+`InterpreterError` instead of running forever, since a language a model
+writes programs in shouldn't be able to hang the process running it. The feasibility question — can an
 open-weight model reliably generate valid syntax for this grammar — has
 a first real answer across two 3B models (`llama3.2:3b` 72% correct,
 `qwen2.5:3b` 60%, 5 tasks x 5 reps each, `feasibility_test.py`), with

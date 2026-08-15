@@ -4,7 +4,7 @@ parsing and dispatch pattern for a single tool call.
 """
 
 import pytest
-from interpreter import CapabilityError, InterpreterError, run
+from interpreter import MAX_WHILE_ITERATIONS, CapabilityError, InterpreterError, run
 
 
 def test_simple_call_dispatches():
@@ -91,6 +91,68 @@ def test_conditional_with_undefined_test_variable_is_rejected():
 def test_unsupported_statement_inside_branch_is_rejected():
     with pytest.raises(InterpreterError):
         run("if 1 == 1:\n    import os", {})
+
+
+def test_while_loop_executes_body_while_condition_true():
+    calls = []
+
+    def get_count():
+        return len(calls)
+
+    def tick():
+        calls.append(1)
+
+    run("while get_count() < 3:\n    tick()", {"get_count": get_count, "tick": tick})
+    assert len(calls) == 3
+
+
+def test_while_loop_false_condition_never_executes_body():
+    calls = []
+
+    def mark():
+        calls.append(1)
+
+    run("while 1 == 2:\n    mark()", {"mark": mark})
+    assert calls == []
+
+
+def test_while_else_is_rejected():
+    with pytest.raises(InterpreterError):
+        run("while 1 == 2:\n    x = 1\nelse:\n    y = 2", {})
+
+
+def test_while_loop_exceeding_iteration_cap_raises():
+    def always_true():
+        return True
+
+    def noop():
+        return None
+
+    with pytest.raises(InterpreterError):
+        run("while always_true():\n    noop()", {"always_true": always_true, "noop": noop})
+
+
+def test_while_loop_iteration_cap_is_exported():
+    assert MAX_WHILE_ITERATIONS > 0
+
+
+def test_untrusted_value_still_blocked_inside_a_while_loop_body():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    def should_continue():
+        return True
+
+    with pytest.raises(CapabilityError):
+        run(
+            "while should_continue():\n    x = read_secret()\n    approve(x)",
+            {"should_continue": should_continue, "read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
 
 
 def test_trusted_value_allowed_into_privileged_op():
