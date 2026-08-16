@@ -172,6 +172,107 @@ def test_source_wins_when_a_name_is_both_source_and_sanitizer():
         )
 
 
+# Adversarial: a sanitizer clears the outer trust tag on whatever it
+# returns, but if it just passes a tagged list through unchanged, the
+# elements inside keep their own tags. Found by deliberately trying to
+# launder untrusted data through a container instead of writing another
+# confirmation test -- see notes/ROADMAP.md item 4.
+
+
+def test_sanitizing_a_list_does_not_launder_an_untrusted_element_inside_it():
+    def read_secret():
+        return "sk-secret"
+
+    def identity_sanitizer(x):
+        return x
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "items = [read_secret()]\ny = identity_sanitizer(items)\napprove(y)",
+            {
+                "read_secret": read_secret,
+                "identity_sanitizer": identity_sanitizer,
+                "approve": approve,
+            },
+            sources=frozenset({"read_secret"}),
+            sanitizers=frozenset({"identity_sanitizer"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_indexing_into_a_sanitized_list_still_sees_the_true_nested_tag():
+    def read_secret():
+        return "sk-secret"
+
+    def identity_sanitizer(x):
+        return x
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "items = [read_secret()]\ny = identity_sanitizer(items)\napprove(y[0])",
+            {
+                "read_secret": read_secret,
+                "identity_sanitizer": identity_sanitizer,
+                "approve": approve,
+            },
+            sources=frozenset({"read_secret"}),
+            sanitizers=frozenset({"identity_sanitizer"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_ordinary_function_passing_through_a_sanitized_list_still_propagates_untrusted():
+    def read_secret():
+        return "sk-secret"
+
+    def identity_sanitizer(x):
+        return x
+
+    def wrap(x):
+        return x
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "items = [read_secret()]\ny = identity_sanitizer(items)\napprove(wrap(y))",
+            {
+                "read_secret": read_secret,
+                "identity_sanitizer": identity_sanitizer,
+                "wrap": wrap,
+                "approve": approve,
+            },
+            sources=frozenset({"read_secret"}),
+            sanitizers=frozenset({"identity_sanitizer"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_sanitizing_a_fully_trusted_list_still_works_normally():
+    calls = []
+
+    def identity_sanitizer(x):
+        return x
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "items = [1, 2]\ny = identity_sanitizer(items)\napprove(y)",
+        {"identity_sanitizer": identity_sanitizer, "approve": approve},
+        sanitizers=frozenset({"identity_sanitizer"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [[(1, Trust.TRUSTED), (2, Trust.TRUSTED)]]
+
+
 def test_list_literal_evaluates_to_a_list_of_tagged_elements():
     result = run("[1, 2, 3]", {})
     assert result == [(1, Trust.TRUSTED), (2, Trust.TRUSTED), (3, Trust.TRUSTED)]

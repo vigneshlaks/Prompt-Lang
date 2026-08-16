@@ -124,6 +124,23 @@ def _is_tagged_list(value: Any) -> bool:
     )
 
 
+def _has_untrusted(value: Any, trust: Trust) -> bool:
+    """True if trust itself is UNTRUSTED, or value is a tagged list
+    containing an untrusted element anywhere, recursively. A container's
+    own outer trust tag can be overridden by a source or sanitizer
+    independent of what's nested inside it -- a sanitizer that merely
+    passes a tagged list through leaves its inner tags untouched while
+    its outer tag flips to TRUSTED. Every place that gates on an
+    argument's trust checks this instead of the bare outer tag, so a
+    container can't be laundered by clearing only its own top-level
+    label."""
+    if trust == Trust.UNTRUSTED:
+        return True
+    if isinstance(value, list) and _is_tagged_list(value):
+        return any(_has_untrusted(v, t) for v, t in value)
+    return False
+
+
 def _as_tagged_list(value: Any, context: str) -> list[tuple[Any, Trust]]:
     """Checks that value is shaped like a list this interpreter itself
     builds: a list of (value, Trust) pairs. Raises InterpreterError with a
@@ -167,8 +184,9 @@ def eval_node(
             kw.arg: eval_node(kw.value, allowed, env, sources, privileged, sanitizers)
             for kw in node.keywords
         }
-        arg_trusts = [t for _, t in arg_results] + [t for _, t in kwarg_results.values()]
-        if name in privileged and Trust.UNTRUSTED in arg_trusts:
+        all_args = arg_results + list(kwarg_results.values())
+        any_untrusted = any(_has_untrusted(v, t) for v, t in all_args)
+        if name in privileged and any_untrusted:
             raise CapabilityError(
                 f"privileged operation {name!r} called with an untrusted argument"
             )
@@ -179,7 +197,7 @@ def eval_node(
             result_trust = Trust.UNTRUSTED
         elif name in sanitizers:
             result_trust = Trust.TRUSTED
-        elif Trust.UNTRUSTED in arg_trusts:
+        elif any_untrusted:
             result_trust = Trust.UNTRUSTED
         else:
             result_trust = Trust.TRUSTED

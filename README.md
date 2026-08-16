@@ -111,6 +111,20 @@ from a privileged call using data it wrote to the store itself earlier in
 the same run, since every read from a shared store is treated as
 untrusted regardless of who wrote it.
 
+A first adversarial pass found a real gap, not a hypothetical one: a
+list's own outer trust tag can be cleared by any sanitizer, however
+trivial, independent of what's nested inside it. `identity_sanitizer(x):
+return x` applied to `[read_secret()]` produced a list whose outer tag
+read trusted while the element inside was still tagged untrusted, and
+the privileged check only ever looked at the outer tag — passing the
+whole list to a privileged function slipped through untouched. Indexing
+into the list still saw the correct nested tag; only passing the
+container as a whole was affected. Fixed by making the privileged check
+and trust propagation both look recursively inside a tagged list's
+elements (`_has_untrusted` in `interpreter.py`), not just at a value's
+own outer tag, so a sanitizer can't launder a container's contents by
+clearing only its own top-level label.
+
 ```bash
 pip install pytest
 pytest tests/ -v
