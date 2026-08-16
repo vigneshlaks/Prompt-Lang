@@ -4,7 +4,15 @@ parsing and dispatch pattern for a single tool call.
 """
 
 import pytest
-from interpreter import MAX_WHILE_ITERATIONS, CapabilityError, InterpreterError, Trust, run
+from interpreter import (
+    MAX_WHILE_ITERATIONS,
+    CapabilityError,
+    ConfidentialityError,
+    InterpreterError,
+    Secrecy,
+    Trust,
+    run,
+)
 
 
 def test_simple_call_dispatches():
@@ -172,6 +180,343 @@ def test_source_wins_when_a_name_is_both_source_and_sanitizer():
         )
 
 
+# Confidentiality: the mirror image of the integrity tests above. A
+# `confidential` function's output is always SECRET; a `sinks` function
+# refuses to run if any argument is SECRET, raising ConfidentialityError;
+# `declassifiers` deliberately clear the SECRET tag. Same shape as
+# sources/privileged/sanitizers, checked in the opposite direction.
+
+
+def test_secret_value_blocked_from_sink():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(read_api_key())",
+            {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_secret_value_still_blocked_after_passing_through_a_variable():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "x = read_api_key()\nsend_to_webhook(x)",
+            {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_secret_value_allowed_into_a_non_sink_function():
+    calls = []
+
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def log_internally(x):
+        calls.append(x)
+
+    run(
+        "log_internally(read_api_key())",
+        {"read_api_key": read_api_key, "log_internally": log_internally},
+        confidential=frozenset({"read_api_key"}),
+    )
+    assert calls == ["sk-live-real-key"]
+
+
+def test_public_value_allowed_into_sink():
+    calls = []
+
+    def send_to_webhook(x):
+        calls.append(x)
+
+    run(
+        "send_to_webhook(5)",
+        {"send_to_webhook": send_to_webhook},
+        sinks=frozenset({"send_to_webhook"}),
+    )
+    assert calls == [5]
+
+
+def test_declassifier_result_is_public_regardless_of_argument_secrecy():
+    calls = []
+
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def redact(x):
+        return "***"
+
+    def send_to_webhook(x):
+        calls.append(x)
+
+    run(
+        "send_to_webhook(redact(read_api_key()))",
+        {"read_api_key": read_api_key, "redact": redact, "send_to_webhook": send_to_webhook},
+        confidential=frozenset({"read_api_key"}),
+        declassifiers=frozenset({"redact"}),
+        sinks=frozenset({"send_to_webhook"}),
+    )
+    assert calls == ["***"]
+
+
+def test_secret_value_still_blocked_when_declassifier_is_not_called():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def redact(x):
+        return "***"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(read_api_key())",
+            {
+                "read_api_key": read_api_key,
+                "redact": redact,
+                "send_to_webhook": send_to_webhook,
+            },
+            confidential=frozenset({"read_api_key"}),
+            declassifiers=frozenset({"redact"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_function_not_named_as_declassifier_does_not_clear_secrecy():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def wrap(x):
+        return f"[{x}]"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(wrap(read_api_key()))",
+            {"read_api_key": read_api_key, "wrap": wrap, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            declassifiers=frozenset(),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_confidential_wins_when_a_name_is_both_confidential_and_declassifier():
+    def confused():
+        return "value"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(confused())",
+            {"confused": confused, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"confused"}),
+            declassifiers=frozenset({"confused"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_secrecy_propagates_through_a_chain_of_ordinary_functions():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def wrap(x):
+        return f"[{x}]"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(wrap(wrap(read_api_key())))",
+            {"read_api_key": read_api_key, "wrap": wrap, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_comparison_result_is_secret_if_either_operand_is_secret():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(read_api_key() == 'guess')",
+            {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_list_element_keeps_its_own_secrecy_when_indexed():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "items = [1, read_api_key()]\nsend_to_webhook(items[1])",
+            {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_public_list_element_is_not_blocked_even_if_sibling_is_secret():
+    calls = []
+
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        calls.append(x)
+
+    run(
+        "items = [1, read_api_key()]\nsend_to_webhook(items[0])",
+        {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+        confidential=frozenset({"read_api_key"}),
+        sinks=frozenset({"send_to_webhook"}),
+    )
+    assert calls == [1]
+
+
+def test_dict_value_keeps_its_own_secrecy_when_subscripted():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            'd = {"safe": 1, "leak": read_api_key()}\nsend_to_webhook(d["leak"])',
+            {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_auto_wrapped_list_elements_share_the_calls_own_secret_status():
+    def read_secrets():
+        return ["sk-one", "sk-two"]
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "for x in read_secrets():\n    send_to_webhook(x)",
+            {"read_secrets": read_secrets, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_secrets"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+# Adversarial: the same laundering shape already found and fixed for
+# integrity (a container's outer tag cleared while its contents stay
+# tagged), checked against confidentiality up front instead of finding
+# it as a second, separate bug later.
+
+
+def test_declassifying_a_list_does_not_launder_a_secret_element_inside_it():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def identity_declassifier(x):
+        return x
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "items = [read_api_key()]\ny = identity_declassifier(items)\nsend_to_webhook(y)",
+            {
+                "read_api_key": read_api_key,
+                "identity_declassifier": identity_declassifier,
+                "send_to_webhook": send_to_webhook,
+            },
+            confidential=frozenset({"read_api_key"}),
+            declassifiers=frozenset({"identity_declassifier"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_declassifying_a_dict_does_not_launder_a_secret_value_inside_it():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def identity_declassifier(x):
+        return x
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            'd = {"leak": read_api_key()}\ny = identity_declassifier(d)\nsend_to_webhook(y)',
+            {
+                "read_api_key": read_api_key,
+                "identity_declassifier": identity_declassifier,
+                "send_to_webhook": send_to_webhook,
+            },
+            confidential=frozenset({"read_api_key"}),
+            declassifiers=frozenset({"identity_declassifier"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+# Known, named gap: confidentiality tracking here is explicit-flow only,
+# same starting point integrity had before pc_trust existed. A secret
+# value can still decide which branch runs, leaking information through
+# which sink call fires, even though neither call takes a secret
+# argument directly. No pc_secrecy mitigation exists yet -- this test
+# documents the gap rather than pretending it's closed.
+
+
+def test_KNOWN_GAP_secret_can_still_pick_which_sink_call_fires():
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def reveal_match():
+        pass
+
+    def reveal_no_match():
+        pass
+
+    # Does NOT raise today -- this is the confidentiality analog of the
+    # implicit-flow gap integrity tracking had before pc_trust, and it
+    # is not yet mitigated on this side.
+    run(
+        "if read_api_key() == 'guess':\n    reveal_match()\nelse:\n    reveal_no_match()",
+        {"read_api_key": read_api_key, "reveal_match": reveal_match, "reveal_no_match": reveal_no_match},
+        confidential=frozenset({"read_api_key"}),
+        sinks=frozenset({"reveal_match", "reveal_no_match"}),
+    )
+
+
 # Adversarial: a sanitizer clears the outer trust tag on whatever it
 # returns, but if it just passes a tagged list through unchanged, the
 # elements inside keep their own tags. Found by deliberately trying to
@@ -270,7 +615,7 @@ def test_sanitizing_a_fully_trusted_list_still_works_normally():
         sanitizers=frozenset({"identity_sanitizer"}),
         privileged=frozenset({"approve"}),
     )
-    assert calls == [[(1, Trust.TRUSTED), (2, Trust.TRUSTED)]]
+    assert calls == [[(1, Trust.TRUSTED, Secrecy.PUBLIC), (2, Trust.TRUSTED, Secrecy.PUBLIC)]]
 
 
 # Adversarial: untrusted data can decide which branch runs without ever
@@ -385,12 +730,16 @@ def test_nested_loops_cannot_multiply_past_the_total_iteration_budget():
 
 def test_list_literal_evaluates_to_a_list_of_tagged_elements():
     result = run("[1, 2, 3]", {})
-    assert result == [(1, Trust.TRUSTED), (2, Trust.TRUSTED), (3, Trust.TRUSTED)]
+    assert result == [
+        (1, Trust.TRUSTED, Secrecy.PUBLIC),
+        (2, Trust.TRUSTED, Secrecy.PUBLIC),
+        (3, Trust.TRUSTED, Secrecy.PUBLIC),
+    ]
 
 
 def test_dict_literal_evaluates_to_a_tagged_dict():
     result = run('{"a": 1, "b": 2}', {})
-    assert result == {"a": (1, Trust.TRUSTED), "b": (2, Trust.TRUSTED)}
+    assert result == {"a": (1, Trust.TRUSTED, Secrecy.PUBLIC), "b": (2, Trust.TRUSTED, Secrecy.PUBLIC)}
 
 
 def test_dict_subscript_reads_a_value_by_key():
@@ -626,7 +975,7 @@ def test_auto_wrapped_elements_share_the_calls_own_trusted_status():
 
 def test_function_returning_already_tagged_pairs_opts_out_of_auto_wrap():
     def read_mixed_trust_items():
-        return [("sk-secret", Trust.UNTRUSTED), (1, Trust.TRUSTED)]
+        return [("sk-secret", Trust.UNTRUSTED, Secrecy.PUBLIC), (1, Trust.TRUSTED, Secrecy.PUBLIC)]
 
     def approve(x):
         raise AssertionError("must not be called with an untrusted argument")

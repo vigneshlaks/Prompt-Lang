@@ -120,8 +120,32 @@ return value is always trusted, regardless of its arguments — the one
 deliberate, explicitly declared way for a program to turn untrusted data
 back into trusted, kept intentionally narrow: a name has this effect only
 if it's listed, never because of what the function happens to do.
-Confidentiality, the reverse direction of stopping sensitive data from
-reaching an untrusted sink, still isn't handled.
+Confidentiality now exists too, as a fully independent second tag —
+`Secrecy` (`PUBLIC`/`SECRET`) — tracked alongside `Trust` on every value,
+not folded into it, since a value can be trustworthy but secret (a real
+API key) or untrustworthy but not remotely sensitive (an attacker's
+email body) at the same time. `confidential` names whitelisted functions
+whose return value is always secret; `sinks` names whitelisted functions
+that refuse to run at all if any argument is secret, raising
+`ConfidentialityError`; `declassifiers` names whitelisted functions
+allowed to deliberately clear the secret tag, the confidentiality
+counterpart to `sanitizers`. Every rule already established for the
+integrity side — propagation through chains of calls, per-element
+tracking in lists and dicts, auto-wrap, `sources` beating `sanitizers` on
+a contradictory name — has a mirrored version here, and the
+sanitizer-laundering gap already found and fixed for integrity was
+checked against confidentiality before shipping, not after.
+
+One gap is carried over on purpose, not silently: confidentiality
+tracking here is explicit-flow only, the same starting point integrity
+tracking had this morning. A secret value can still decide which branch
+of an if/while runs and leak information through which sink call fires
+— `if read_api_key() == guess: reveal_match() else: reveal_no_match()`
+runs with no error today, even with neither call taking a secret
+argument, because nothing tracks pc-level secrecy the way `pc_trust`
+tracks pc-level trust. This is documented and tested as a known,
+demonstrated gap (`test_KNOWN_GAP_secret_can_still_pick_which_sink_call_fires`
+in `tests/test_interpreter.py`), not an oversight.
 
 Everything above tracks explicit data flow — does an untrusted value
 reach a privileged call as an argument. A second adversarial pass found
