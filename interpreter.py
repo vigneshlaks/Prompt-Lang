@@ -72,17 +72,6 @@ tag, the confidentiality counterpart to `sanitizers`. If a name is in both
 `confidential` and `declassifiers`, `confidential` wins, for the same
 fail-safe reason `sources` wins over `sanitizers`.
 
-Confidentiality tracking here is explicit-flow only, same starting point
-integrity tracking had before today's implicit-flow work: it catches a
-SECRET value reaching a sink as an argument, not a SECRET value merely
-influencing which branch of an if/while ran (the classic example: `if
-secret == guess: reveal_match() else: reveal_no_match()` leaks a bit of
-the secret through which branch executes, even if neither branch's call
-takes an argument). That gap is a known, named limitation, not
-undiscovered -- it's the direct confidentiality analog of the
-implicit-flow gap integrity tracking has (see pc_trust below), just not
-yet mitigated on this side.
-
 The six capability sets above are bundled into one `_Capabilities` object
 rather than threaded as six separate parameters through every recursive
 eval_node/exec_stmt call. That's not decoration: with six independent
@@ -135,38 +124,35 @@ the nested tags can disagree. _has_untrusted and _has_secret both check
 this recursively, everywhere an argument's trust or secrecy is inspected
 (the privileged/sink gates and ordinary propagation), so a container
 can't be laundered by clearing only its own top-level label while what's
-nested inside stays untrusted or secret. This was checked for dicts and
-for the confidentiality side before either shipped, not discovered as a
-repeat bug afterward -- the same class of gap found once for lists on the
-integrity side doesn't need rediscovering for every new container shape
-or every new tag dimension.
+nested inside stays untrusted or secret.
 
-Everything above (integrity side) tracks explicit data flow: does an
-untrusted value reach a privileged call as an argument. It does not, by
-itself, track implicit flow: untrusted data can freely decide which
-branch of an if/while runs without ever appearing as an argument, and if
-the privileged call in that branch takes no untrusted argument (or no
-argument at all), the argument check has nothing to see. A scoped,
-partial mitigation exists for this: every eval_node/exec_stmt call
-threads a pc_trust value (the trust of the control flow that led to this
-point in the program). Entering an if branch, a while body, or a for body
-whose controlling condition or iterable was UNTRUSTED raises pc_trust to
-UNTRUSTED for that block; a privileged call made while pc_trust is
-UNTRUSTED is refused, regardless of its own arguments. This is
-deliberately narrow -- it gates privileged calls only, it does not
-retroactively taint every value computed under a raised pc_trust the way
-a complete implicit-flow system would (assigning to a variable that
-already exists, for instance, isn't currently affected). Real
-implicit-flow tracking done properly tends to make a system very
-restrictive, since almost anything computed inside a branch on untrusted
-data ends up needing to be treated as untrusted too; most practical taint
-trackers (Perl's taint mode among them) deliberately don't attempt it for
-exactly that reason. This mitigation is a bounded compromise, not a
-complete solution, and is scoped to the one case found by deliberately
-testing it: a privileged call with no untrusted arguments, reachable only
-through a branch an untrusted value controlled. No equivalent pc_secrecy
-exists yet for the confidentiality side -- that's the named gap described
-above, left for a future pass rather than silently unaddressed.
+Neither integrity nor confidentiality tracking is complete on explicit
+data flow alone: does a tagged value reach a call as an argument. Neither
+sees implicit flow by default: a tagged value can decide which branch of
+an if/while runs without ever appearing as an argument, and a call in that
+branch that takes no matching-tagged argument (or no argument at all) is
+invisible to the argument check. Both sides now have a scoped, partial
+mitigation for this, tracked in parallel: every eval_node/exec_stmt call
+threads a pc_trust value and a pc_secrecy value -- the trust and secrecy
+of the control flow that led to this point in the program. Entering an if
+branch, a while body, or a for body whose controlling condition or
+iterable was UNTRUSTED raises pc_trust to UNTRUSTED for that block, and
+likewise raises pc_secrecy to SECRET if the condition or iterable was
+SECRET. A privileged call made while pc_trust is UNTRUSTED is refused
+regardless of its own arguments; a sink call made while pc_secrecy is
+SECRET is refused the same way. This is deliberately narrow on both
+sides -- it gates privileged/sink calls only, it does not retroactively
+taint every value computed under a raised pc the way a complete
+implicit-flow system would (assigning to a variable that already exists,
+for instance, isn't currently affected). Real implicit-flow tracking done
+properly tends to make a system very restrictive, since almost anything
+computed inside a branch on tagged data ends up needing the same
+treatment; most practical taint trackers (Perl's taint mode among them)
+deliberately don't attempt it for exactly that reason. This mitigation is
+a bounded compromise, not a complete solution, scoped to the concrete
+cases found by deliberately testing for them: a privileged or sink call
+with no matching-tagged arguments, reachable only through a branch a
+tagged value controlled.
 """
 
 from __future__ import annotations
@@ -212,8 +198,9 @@ class CapabilityError(InterpreterError):
 
 
 class ConfidentialityError(InterpreterError):
-    """Raised when a SECRET value reaches a sink operation as an
-    argument -- the confidentiality counterpart to CapabilityError. A
+    """Raised when a SECRET value reaches a sink operation, either
+    directly as an argument or by controlling which branch a sink call
+    sits in -- the confidentiality counterpart to CapabilityError. A
     subclass of InterpreterError so existing callers that catch the
     whitelist-boundary error also catch this, while code that cares can
     still distinguish it from CapabilityError, its integrity twin."""
@@ -347,26 +334,31 @@ def eval_node(
     env: dict[str, tuple[Any, Trust, Secrecy]],
     caps: _Capabilities,
     pc_trust: Trust = Trust.TRUSTED,
+    pc_secrecy: Secrecy = Secrecy.PUBLIC,
 ) -> tuple[Any, Trust, Secrecy]:
     """Evaluates a single expression node: a call, a constant, a variable
     read, a comparison, a list literal, a dict literal, or a subscript.
     Each case is explicit; anything else raises rather than falling back
     to a general evaluator. Returns (value, trust, secrecy), not a bare
     value -- every expression in this language carries both tags
-    alongside its value. pc_trust is the trust of the control flow that
-    led here (see the module docstring's implicit-flow section) --
-    UNTRUSTED means this code is running inside a branch an untrusted
-    value controlled, and a privileged call made under it is refused
-    regardless of its own arguments."""
+    alongside its value. pc_trust and pc_secrecy are the trust and
+    secrecy of the control flow that led here (see the module docstring's
+    implicit-flow section) -- an UNTRUSTED pc_trust means this code is
+    running inside a branch an untrusted value controlled, and a
+    privileged call made under it is refused regardless of its own
+    arguments; a SECRET pc_secrecy does the same for sink calls."""
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
             raise InterpreterError("calls must be a plain function name")
         name = node.func.id
         if name not in allowed:
             raise InterpreterError(f"unknown or disallowed name: {name}")
-        arg_results = [eval_node(a, allowed, env, caps, pc_trust) for a in node.args]
+        arg_results = [
+            eval_node(a, allowed, env, caps, pc_trust, pc_secrecy) for a in node.args
+        ]
         kwarg_results = {
-            kw.arg: eval_node(kw.value, allowed, env, caps, pc_trust) for kw in node.keywords
+            kw.arg: eval_node(kw.value, allowed, env, caps, pc_trust, pc_secrecy)
+            for kw in node.keywords
         }
         all_args = arg_results + list(kwarg_results.values())
         any_untrusted = any(_has_untrusted(v, t) for v, t, _ in all_args)
@@ -383,6 +375,11 @@ def eval_node(
         if name in caps.sinks and any_secret:
             raise ConfidentialityError(
                 f"sink operation {name!r} called with a secret argument"
+            )
+        if name in caps.sinks and pc_secrecy == Secrecy.SECRET:
+            raise ConfidentialityError(
+                f"sink operation {name!r} called from a branch whose "
+                "condition depended on secret data"
             )
         args = [v for v, _, _ in arg_results]
         kwargs = {k: v for k, (v, _, _) in kwarg_results.items()}
@@ -422,15 +419,15 @@ def eval_node(
         op_type = type(node.ops[0])
         if op_type not in _COMPARE_OPS:
             raise InterpreterError(f"unsupported comparison operator: {op_type.__name__}")
-        left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust)
+        left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
         right, right_trust, right_secrecy = eval_node(
-            node.comparators[0], allowed, env, caps, pc_trust
+            node.comparators[0], allowed, env, caps, pc_trust, pc_secrecy
         )
         compare_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
         compare_secrecy = Secrecy.SECRET if Secrecy.SECRET in (left_secrecy, right_secrecy) else Secrecy.PUBLIC
         return _COMPARE_OPS[op_type](left, right), compare_trust, compare_secrecy
     if isinstance(node, ast.List):
-        elements = [eval_node(e, allowed, env, caps, pc_trust) for e in node.elts]
+        elements = [eval_node(e, allowed, env, caps, pc_trust, pc_secrecy) for e in node.elts]
         list_trust = Trust.UNTRUSTED if any(t == Trust.UNTRUSTED for _, t, _ in elements) else Trust.TRUSTED
         list_secrecy = Secrecy.SECRET if any(s == Secrecy.SECRET for _, _, s in elements) else Secrecy.PUBLIC
         return elements, list_trust, list_secrecy
@@ -439,8 +436,8 @@ def eval_node(
             raise InterpreterError("dict unpacking (**) is not supported")
         entries = []
         for key_node, value_node in zip(node.keys, node.values):
-            key, key_trust, key_secrecy = eval_node(key_node, allowed, env, caps, pc_trust)
-            value_result = eval_node(value_node, allowed, env, caps, pc_trust)
+            key, key_trust, key_secrecy = eval_node(key_node, allowed, env, caps, pc_trust, pc_secrecy)
+            value_result = eval_node(value_node, allowed, env, caps, pc_trust, pc_secrecy)
             entries.append((key, key_trust, key_secrecy, value_result))
         result_dict: dict[Any, tuple[Any, Trust, Secrecy]] = {}
         for key, _, _, value_result in entries:
@@ -459,8 +456,8 @@ def eval_node(
     if isinstance(node, ast.Subscript):
         if not isinstance(node.ctx, ast.Load):
             raise InterpreterError(f"unsupported subscript usage: {ast.dump(node)}")
-        container, _, _ = eval_node(node.value, allowed, env, caps, pc_trust)
-        index, _, _ = eval_node(node.slice, allowed, env, caps, pc_trust)
+        container, _, _ = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
+        index, _, _ = eval_node(node.slice, allowed, env, caps, pc_trust, pc_secrecy)
         if _is_tagged_list(container):
             if not isinstance(index, int) or isinstance(index, bool):
                 raise InterpreterError("list index must be an integer")
@@ -489,35 +486,42 @@ def exec_stmt(
     env: dict[str, tuple[Any, Trust, Secrecy]],
     caps: _Capabilities,
     pc_trust: Trust = Trust.TRUSTED,
+    pc_secrecy: Secrecy = Secrecy.PUBLIC,
     budget: _IterationBudget | None = None,
 ) -> tuple[Any, Trust, Secrecy] | None:
     """Executes a single statement node: an assignment, a conditional, a
     while loop, a for loop, or an expression statement. Returns
     (value, trust, secrecy) for an expr_stmt, None otherwise. Unsupported
     statement types (imports, def, class, ...) raise rather than being
-    silently skipped. pc_trust is the trust of the control flow that led
-    here (see the module docstring's implicit-flow section); budget is
-    the shared iteration counter for the whole run() call, or None if the
-    caller doesn't want the global cap enforced."""
+    silently skipped. pc_trust and pc_secrecy are the trust and secrecy
+    of the control flow that led here (see the module docstring's
+    implicit-flow section); budget is the shared iteration counter for
+    the whole run() call, or None if the caller doesn't want the global
+    cap enforced."""
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
-        env[node.targets[0].id] = eval_node(node.value, allowed, env, caps, pc_trust)
+        env[node.targets[0].id] = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
         return None
     if isinstance(node, ast.If):
-        test_value, test_trust, _ = eval_node(node.test, allowed, env, caps, pc_trust)
-        branch_pc = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
+        test_value, test_trust, test_secrecy = eval_node(
+            node.test, allowed, env, caps, pc_trust, pc_secrecy
+        )
+        branch_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
+        branch_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or test_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
         branch = node.body if test_value else node.orelse
         result = None
         for stmt in branch:
-            result = exec_stmt(stmt, allowed, env, caps, branch_pc, budget)
+            result = exec_stmt(stmt, allowed, env, caps, branch_pc_trust, branch_pc_secrecy, budget)
         return result
     if isinstance(node, ast.While):
         if node.orelse:
             raise InterpreterError("while/else is not supported")
         result = None
         iterations = 0
-        test_value, test_trust, _ = eval_node(node.test, allowed, env, caps, pc_trust)
+        test_value, test_trust, test_secrecy = eval_node(
+            node.test, allowed, env, caps, pc_trust, pc_secrecy
+        )
         while test_value:
             iterations += 1
             if iterations > MAX_WHILE_ITERATIONS:
@@ -526,29 +530,35 @@ def exec_stmt(
                 )
             if budget is not None:
                 budget.consume()
-            body_pc = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
+            body_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
+            body_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or test_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, caps, body_pc, budget)
-            test_value, test_trust, _ = eval_node(node.test, allowed, env, caps, pc_trust)
+                result = exec_stmt(stmt, allowed, env, caps, body_pc_trust, body_pc_secrecy, budget)
+            test_value, test_trust, test_secrecy = eval_node(
+                node.test, allowed, env, caps, pc_trust, pc_secrecy
+            )
         return result
     if isinstance(node, ast.For):
         if node.orelse:
             raise InterpreterError("for/else is not supported")
         if not isinstance(node.target, ast.Name):
             raise InterpreterError("for loop target must be a single plain name")
-        iterable, iterable_trust, _ = eval_node(node.iter, allowed, env, caps, pc_trust)
+        iterable, iterable_trust, iterable_secrecy = eval_node(
+            node.iter, allowed, env, caps, pc_trust, pc_secrecy
+        )
         tagged = _as_tagged_list(iterable, "a for loop's iterable")
-        body_pc = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or iterable_trust == Trust.UNTRUSTED else Trust.TRUSTED
+        body_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or iterable_trust == Trust.UNTRUSTED else Trust.TRUSTED
+        body_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or iterable_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
         result = None
         for element in tagged:
             if budget is not None:
                 budget.consume()
             env[node.target.id] = element
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, caps, body_pc, budget)
+                result = exec_stmt(stmt, allowed, env, caps, body_pc_trust, body_pc_secrecy, budget)
         return result
     if isinstance(node, ast.Expr):
-        return eval_node(node.value, allowed, env, caps, pc_trust)
+        return eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
     raise InterpreterError(f"unsupported statement: {ast.dump(node)}")
 
 
@@ -573,7 +583,7 @@ def run(
     branch. A malformed program raises InterpreterError; an UNTRUSTED
     value reaching a name in `privileged`, either as an argument or by
     controlling which branch it's called from, raises CapabilityError; a
-    SECRET value reaching a name in `sinks` as an argument raises
+    SECRET value reaching a name in `sinks` the same two ways raises
     ConfidentialityError. A fresh _IterationBudget is created for this
     call and shared across every loop the program runs, bounding total
     iterations across the whole program, not just within any single
@@ -588,5 +598,5 @@ def run(
     budget = _IterationBudget(MAX_TOTAL_ITERATIONS)
     result = None
     for stmt in tree.body:
-        result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, budget)
+        result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, Secrecy.PUBLIC, budget)
     return result[0] if result is not None else None

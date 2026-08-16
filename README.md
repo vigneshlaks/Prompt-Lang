@@ -136,38 +136,35 @@ a contradictory name — has a mirrored version here, and the
 sanitizer-laundering gap already found and fixed for integrity was
 checked against confidentiality before shipping, not after.
 
-One gap is carried over on purpose, not silently: confidentiality
-tracking here is explicit-flow only, the same starting point integrity
-tracking had this morning. A secret value can still decide which branch
-of an if/while runs and leak information through which sink call fires
-— `if read_api_key() == guess: reveal_match() else: reveal_no_match()`
-runs with no error today, even with neither call taking a secret
-argument, because nothing tracks pc-level secrecy the way `pc_trust`
-tracks pc-level trust. This is documented and tested as a known,
-demonstrated gap (`test_KNOWN_GAP_secret_can_still_pick_which_sink_call_fires`
-in `tests/test_interpreter.py`), not an oversight.
+Neither side tracks more than explicit data flow by default — does a
+tagged value reach a call as an argument. Adversarial testing found that
+this misses implicit flow entirely on the integrity side first:
+untrusted data can decide which branch of an if/while runs without ever
+appearing as an argument, so a privileged call that takes no untrusted
+argument (or no argument at all) had nothing for the check to see.
+`send_to_attacker()`, called from inside
+`if read_email() == "...": send_to_attacker()`, ran with no error at
+all, purely because the email's content picked that branch. The same
+gap existed on the confidentiality side, confirmed directly:
+`if read_api_key() == guess: reveal_match() else: reveal_no_match()`
+also ran with no error, leaking which branch fired even though neither
+call took a secret argument.
 
-Everything above tracks explicit data flow — does an untrusted value
-reach a privileged call as an argument. A second adversarial pass found
-that this misses implicit flow entirely: untrusted data can decide which
-branch of an if/while runs without ever appearing as an argument, so a
-privileged call that takes no untrusted argument (or no argument at all)
-had nothing for the check to see. `send_to_attacker()`, called from
-inside `if read_email() == "...": send_to_attacker()`, ran with no error
-at all, purely because the email's content picked that branch. A scoped,
-partial mitigation now exists: every call threads a `pc_trust` value
-(the trust of the control flow that led there), raised to untrusted on
-entering any branch or loop body whose condition was untrusted; a
-privileged call made under an untrusted `pc_trust` is refused regardless
-of its own arguments. This is deliberately narrow — it gates privileged
-calls only, not a complete implicit-flow system (an assignment made
-under a raised `pc_trust` isn't itself retroactively tainted, for
-instance). Real implicit-flow tracking done properly tends to make a
-system very restrictive, since almost anything computed inside a branch
-on untrusted data ends up needing the same treatment; most practical
-taint trackers, Perl's taint mode included, deliberately don't attempt
-it for that reason. This is a bounded compromise scoped to the one case
-adversarial testing actually found, not a claim of completeness.
+Both are now closed by a scoped, partial mitigation: every call threads
+a `pc_trust` value and a `pc_secrecy` value — the trust and secrecy of
+the control flow that led there — raised on entering any branch or loop
+body whose condition was tagged. A privileged call made under an
+untrusted `pc_trust` is refused regardless of its own arguments; a sink
+call made under a secret `pc_secrecy` is refused the same way. This is
+deliberately narrow on both sides — it gates privileged/sink calls only,
+not a complete implicit-flow system (an assignment made under a raised
+pc isn't itself retroactively tainted, for instance). Real implicit-flow
+tracking done properly tends to make a system very restrictive, since
+almost anything computed inside a branch on tagged data ends up needing
+the same treatment; most practical taint trackers, Perl's taint mode
+included, deliberately don't attempt it for that reason. This is a
+bounded compromise scoped to the concrete cases adversarial testing
+actually found on each side, not a claim of completeness.
 
 A shared-store test confirms the mechanism against a stateful store, not
 just a stateless stub: a planted value blocks a downstream privileged

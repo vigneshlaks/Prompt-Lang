@@ -488,33 +488,79 @@ def test_declassifying_a_dict_does_not_launder_a_secret_value_inside_it():
         )
 
 
-# Known, named gap: confidentiality tracking here is explicit-flow only,
-# same starting point integrity had before pc_trust existed. A secret
-# value can still decide which branch runs, leaking information through
-# which sink call fires, even though neither call takes a secret
-# argument directly. No pc_secrecy mitigation exists yet -- this test
-# documents the gap rather than pretending it's closed.
+# pc_secrecy: the confidentiality mirror of pc_trust. A secret value can
+# still decide which branch runs, leaking information through which sink
+# call fires, even when neither call takes a secret argument directly --
+# this used to be an open, documented gap; now it's a closed one.
 
 
-def test_KNOWN_GAP_secret_can_still_pick_which_sink_call_fires():
+def test_sink_call_blocked_when_its_branch_condition_is_secret():
     def read_api_key():
         return "sk-live-real-key"
 
     def reveal_match():
-        pass
+        raise AssertionError("must not run: reached only via a secret condition")
 
     def reveal_no_match():
-        pass
+        raise AssertionError("must not run: reached only via a secret condition")
 
-    # Does NOT raise today -- this is the confidentiality analog of the
-    # implicit-flow gap integrity tracking had before pc_trust, and it
-    # is not yet mitigated on this side.
+    with pytest.raises(ConfidentialityError):
+        run(
+            "if read_api_key() == 'guess':\n    reveal_match()\nelse:\n    reveal_no_match()",
+            {
+                "read_api_key": read_api_key,
+                "reveal_match": reveal_match,
+                "reveal_no_match": reveal_no_match,
+            },
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"reveal_match", "reveal_no_match"}),
+        )
+
+
+def test_sink_call_allowed_when_its_branch_condition_is_public():
+    calls = []
+
+    def notify():
+        calls.append("notified")
+
     run(
-        "if read_api_key() == 'guess':\n    reveal_match()\nelse:\n    reveal_no_match()",
-        {"read_api_key": read_api_key, "reveal_match": reveal_match, "reveal_no_match": reveal_no_match},
-        confidential=frozenset({"read_api_key"}),
-        sinks=frozenset({"reveal_match", "reveal_no_match"}),
+        "if 1 == 1:\n    notify()",
+        {"notify": notify},
+        sinks=frozenset({"notify"}),
     )
+    assert calls == ["notified"]
+
+
+def test_sink_call_blocked_inside_a_while_loop_with_secret_condition():
+    def read_flag():
+        return True
+
+    def notify():
+        raise AssertionError("must not run: reached only via a secret condition")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "while read_flag():\n    notify()",
+            {"read_flag": read_flag, "notify": notify},
+            confidential=frozenset({"read_flag"}),
+            sinks=frozenset({"notify"}),
+        )
+
+
+def test_sink_call_blocked_inside_a_for_loop_over_a_secret_iterable():
+    def get_items():
+        return [1]
+
+    def notify(x):
+        raise AssertionError("must not run: reached only via a secret iterable")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "for x in get_items():\n    notify(x)",
+            {"get_items": get_items, "notify": notify},
+            confidential=frozenset({"get_items"}),
+            sinks=frozenset({"notify"}),
+        )
 
 
 # Adversarial: a sanitizer clears the outer trust tag on whatever it
