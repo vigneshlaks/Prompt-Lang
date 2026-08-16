@@ -212,25 +212,75 @@ def test_for_loop_target_must_be_a_plain_name():
         run("for x[0] in [1]:\n    pass", {})
 
 
-def test_subscripting_a_plain_list_from_an_outside_function_raises():
+def test_subscripting_a_plain_list_from_an_outside_function_is_auto_wrapped():
     def get_raw_list():
         return [1, 2, 3]
 
-    with pytest.raises(InterpreterError):
-        run("x = get_raw_list()\nx[0]", {"get_raw_list": get_raw_list})
+    result = run("x = get_raw_list()\nx[1]", {"get_raw_list": get_raw_list})
+    assert result == 2
 
 
-def test_for_loop_over_a_plain_list_from_an_outside_function_raises():
+def test_for_loop_over_a_plain_list_from_an_outside_function_is_auto_wrapped():
     def get_raw_list():
         return [1, 2, 3]
+
+    calls = []
 
     def visit(x):
-        pass
+        calls.append(x)
 
-    with pytest.raises(InterpreterError):
+    run(
+        "for x in get_raw_list():\n    visit(x)",
+        {"get_raw_list": get_raw_list, "visit": visit},
+    )
+    assert calls == [1, 2, 3]
+
+
+def test_auto_wrapped_elements_share_the_calls_own_untrusted_status():
+    def read_secrets():
+        return ["sk-one", "sk-two"]
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
         run(
-            "for x in get_raw_list():\n    visit(x)",
-            {"get_raw_list": get_raw_list, "visit": visit},
+            "for x in read_secrets():\n    approve(x)",
+            {"read_secrets": read_secrets, "approve": approve},
+            sources=frozenset({"read_secrets"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_auto_wrapped_elements_share_the_calls_own_trusted_status():
+    calls = []
+
+    def get_items():
+        return [1, 2]
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "for x in get_items():\n    approve(x)",
+        {"get_items": get_items, "approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [1, 2]
+
+
+def test_function_returning_already_tagged_pairs_opts_out_of_auto_wrap():
+    def read_mixed_trust_items():
+        return [("sk-secret", Trust.UNTRUSTED), (1, Trust.TRUSTED)]
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "for x in read_mixed_trust_items():\n    approve(x)",
+            {"read_mixed_trust_items": read_mixed_trust_items, "approve": approve},
+            privileged=frozenset({"approve"}),
         )
 
 

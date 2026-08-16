@@ -57,12 +57,14 @@ loops. Trust is tracked per element, not per collection — a list literal
 evaluates each element normally and keeps every element's own
 (value, Trust) pair, so a list mixing trusted and untrusted items doesn't
 collapse to one tag for the whole thing; indexing and iterating both
-read that per-element structure directly. This only applies to lists
-built with a list literal inside a program. A plain Python list handed
-back by a function in `allowed` has no per-element tags, since the
-interpreter never watched it get built, so indexing or iterating over
-one raises `InterpreterError` rather than guessing at a shape that was
-never established.
+read that per-element structure directly. A plain Python list handed
+back by a function in `allowed` has no per-element tags of its own, since
+the interpreter never watched it get built, but instead of rejecting it,
+`eval_node` auto-wraps it: every element gets the same trust the call as
+a whole already earned. That's uniform, not precise — a function that
+needs real per-element distinctions can opt out by returning already
+`(value, Trust)`-tagged pairs itself, which auto-wrap detects and leaves
+untouched.
 
 The feasibility question — can an open-weight model reliably generate
 valid syntax for this grammar — has a real answer across three models,

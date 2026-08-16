@@ -63,12 +63,20 @@ Lists carry trust per element, not as one tag for the whole collection.
 A list literal evaluates each element the normal way and stores the full
 list of (value, Trust) pairs as its value; indexing and for loops both
 read that structure directly, so a list mixing trusted and untrusted
-items keeps each item's own tag instead of collapsing to one. This only
-works for lists actually built with a list literal inside a program --
-a plain Python list handed back by a function in `allowed` has no
-per-element tags, since the interpreter never watched it get built, and
-indexing or iterating over one raises InterpreterError rather than
-guessing at a shape that was never established.
+items keeps each item's own tag instead of collapsing to one.
+
+A plain Python list handed back by a function in `allowed` has no
+per-element tags of its own -- the interpreter never watched it get
+built. Rather than reject it, eval_node auto-wraps it: every element
+gets the same trust the call as a whole already earned (from `sources`,
+`sanitizers`, or argument propagation, the usual rules), turning a plain
+list into the same (value, Trust) pair shape a list literal produces.
+This is uniform, not precise -- every element in an auto-wrapped list
+shares one trust value, since the interpreter has no finer-grained
+information to give it. A function that needs real per-element
+precision (a list of items with genuinely different trust levels) can
+opt out of the uniform treatment by returning already-tagged pairs
+itself; auto-wrap detects that shape and leaves it untouched.
 """
 
 from __future__ import annotations
@@ -106,20 +114,29 @@ class CapabilityError(InterpreterError):
     still distinguish the two."""
 
 
-def _as_tagged_list(value: Any, context: str) -> list[tuple[Any, Trust]]:
-    """Checks that value is shaped like a list this interpreter itself
-    built: a list of (value, Trust) pairs. Raises InterpreterError with a
-    clear explanation rather than letting a plain Python list (returned
-    by a function in `allowed`, with no per-element tags) fail with a
-    confusing unpacking error somewhere downstream."""
-    if not isinstance(value, list) or not all(
+def _is_tagged_list(value: Any) -> bool:
+    """True if value is already shaped like a list this interpreter
+    builds: a list of (value, Trust) pairs. An empty list counts as
+    tagged, vacuously -- there's nothing in it with the wrong shape."""
+    return isinstance(value, list) and all(
         isinstance(item, tuple) and len(item) == 2 and isinstance(item[1], Trust)
         for item in value
-    ):
+    )
+
+
+def _as_tagged_list(value: Any, context: str) -> list[tuple[Any, Trust]]:
+    """Checks that value is shaped like a list this interpreter itself
+    builds: a list of (value, Trust) pairs. Raises InterpreterError with a
+    clear explanation rather than letting a plain Python list fail with a
+    confusing unpacking error somewhere downstream. Calls in `allowed`
+    that return a plain list get it auto-wrapped into this shape before
+    it ever reaches here (see eval_node's ast.Call case), so this only
+    rejects a list that was never given a trust shape at all."""
+    if not _is_tagged_list(value):
         raise InterpreterError(
             f"{context} requires a list built with a list literal (or a "
-            "function in `allowed` returning the same (value, Trust) pair "
-            "shape) -- a plain list has no per-element trust to read"
+            "function in `allowed` returning one) -- a plain list has no "
+            "per-element trust to read"
         )
     return value
 
@@ -166,6 +183,8 @@ def eval_node(
             result_trust = Trust.UNTRUSTED
         else:
             result_trust = Trust.TRUSTED
+        if isinstance(result, list) and not _is_tagged_list(result):
+            result = [(item, result_trust) for item in result]
         return result, result_trust
     if isinstance(node, ast.Constant):
         return node.value, Trust.TRUSTED
