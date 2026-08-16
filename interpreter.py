@@ -25,6 +25,7 @@ Toy grammar supported so far (informal EBNF):
     compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=") expr
     subscript  := expr "[" expr "]"
     list_expr  := "[" (expr ("," expr)*)? "]"
+    dict_expr  := "{" (expr ":" expr ("," expr ":" expr)*)? "}"
     literal    := NUMBER | STRING | "True" | "False" | "None"
 
 Two separate namespaces: `allowed` (whitelisted callables, checked at call
@@ -93,6 +94,21 @@ disagree. _has_untrusted checks both, recursively, everywhere an
 argument's trust is inspected (the privileged gate and ordinary
 propagation), so a container can't be laundered by clearing only its own
 top-level label while what's nested inside stays untrusted.
+
+Dicts work the same way lists do, keeping the lesson from that finding
+rather than relearning it: a dict literal evaluates each key and value
+normally and stores {key: (value, Trust)} as its value, so a dict mixing
+trusted and untrusted values keeps each one's own tag. Its own outer tag
+is the join of every key's and value's trust. Subscripting a dict reads
+that structure directly, the same as a list. A plain Python dict handed
+back by a function in `allowed` gets auto-wrapped exactly like a plain
+list does -- every value tagged uniformly with the call's own trust,
+opt-out available by returning already-tagged pairs. _has_untrusted and
+the tagged-shape checks cover both lists and dicts from the start, so
+the sanitizer-laundering gap already fixed for lists doesn't reopen for
+dicts as a second, separate bug to find later. Dicts do not yet support
+iteration (`for k in some_dict`) -- only literal construction and
+indexed lookup.
 
 Everything above tracks explicit data flow: does an untrusted value reach
 a privileged call as an argument. It does not, by itself, track implicit
@@ -185,20 +201,32 @@ def _is_tagged_list(value: Any) -> bool:
     )
 
 
+def _is_tagged_dict(value: Any) -> bool:
+    """True if value is already shaped like a dict this interpreter
+    builds: a dict whose every value is a (value, Trust) pair. An empty
+    dict counts as tagged, vacuously."""
+    return isinstance(value, dict) and all(
+        isinstance(v, tuple) and len(v) == 2 and isinstance(v[1], Trust)
+        for v in value.values()
+    )
+
+
 def _has_untrusted(value: Any, trust: Trust) -> bool:
-    """True if trust itself is UNTRUSTED, or value is a tagged list
-    containing an untrusted element anywhere, recursively. A container's
-    own outer trust tag can be overridden by a source or sanitizer
-    independent of what's nested inside it -- a sanitizer that merely
-    passes a tagged list through leaves its inner tags untouched while
-    its outer tag flips to TRUSTED. Every place that gates on an
-    argument's trust checks this instead of the bare outer tag, so a
-    container can't be laundered by clearing only its own top-level
-    label."""
+    """True if trust itself is UNTRUSTED, or value is a tagged list or
+    dict containing an untrusted element anywhere, recursively. A
+    container's own outer trust tag can be overridden by a source or
+    sanitizer independent of what's nested inside it -- a sanitizer that
+    merely passes a tagged container through leaves its inner tags
+    untouched while its outer tag flips to TRUSTED. Every place that
+    gates on an argument's trust checks this instead of the bare outer
+    tag, so a container can't be laundered by clearing only its own
+    top-level label."""
     if trust == Trust.UNTRUSTED:
         return True
     if isinstance(value, list) and _is_tagged_list(value):
         return any(_has_untrusted(v, t) for v, t in value)
+    if isinstance(value, dict) and _is_tagged_dict(value):
+        return any(_has_untrusted(v, t) for v, t in value.values())
     return False
 
 
@@ -276,6 +304,8 @@ def eval_node(
             result_trust = Trust.TRUSTED
         if isinstance(result, list) and not _is_tagged_list(result):
             result = [(item, result_trust) for item in result]
+        elif isinstance(result, dict) and not _is_tagged_dict(result):
+            result = {k: (v, result_trust) for k, v in result.items()}
         return result, result_trust
     if isinstance(node, ast.Constant):
         return node.value, Trust.TRUSTED
@@ -303,18 +333,50 @@ def eval_node(
         ]
         list_trust = Trust.UNTRUSTED if any(t == Trust.UNTRUSTED for _, t in elements) else Trust.TRUSTED
         return elements, list_trust
+    if isinstance(node, ast.Dict):
+        if any(k is None for k in node.keys):
+            raise InterpreterError("dict unpacking (**) is not supported")
+        entries = []
+        for key_node, value_node in zip(node.keys, node.values):
+            key, key_trust = eval_node(key_node, allowed, env, sources, privileged, sanitizers, pc_trust)
+            value_result = eval_node(value_node, allowed, env, sources, privileged, sanitizers, pc_trust)
+            entries.append((key, key_trust, value_result))
+        result_dict: dict[Any, tuple[Any, Trust]] = {}
+        for key, _, value_result in entries:
+            try:
+                result_dict[key] = value_result
+            except TypeError as exc:
+                raise InterpreterError(f"unhashable dict key: {key!r}") from exc
+        dict_trust = Trust.TRUSTED
+        for _, key_trust, (_, value_trust) in entries:
+            if key_trust == Trust.UNTRUSTED or value_trust == Trust.UNTRUSTED:
+                dict_trust = Trust.UNTRUSTED
+                break
+        return result_dict, dict_trust
     if isinstance(node, ast.Subscript):
         if not isinstance(node.ctx, ast.Load):
             raise InterpreterError(f"unsupported subscript usage: {ast.dump(node)}")
         container, _ = eval_node(node.value, allowed, env, sources, privileged, sanitizers, pc_trust)
-        tagged = _as_tagged_list(container, "subscripting a list")
         index, _ = eval_node(node.slice, allowed, env, sources, privileged, sanitizers, pc_trust)
-        if not isinstance(index, int) or isinstance(index, bool):
-            raise InterpreterError("list index must be an integer")
-        try:
-            return tagged[index]
-        except IndexError as exc:
-            raise InterpreterError(f"list index out of range: {index}") from exc
+        if _is_tagged_list(container):
+            if not isinstance(index, int) or isinstance(index, bool):
+                raise InterpreterError("list index must be an integer")
+            try:
+                return container[index]
+            except IndexError as exc:
+                raise InterpreterError(f"list index out of range: {index}") from exc
+        if _is_tagged_dict(container):
+            try:
+                return container[index]
+            except KeyError as exc:
+                raise InterpreterError(f"dict has no key: {index!r}") from exc
+            except TypeError as exc:
+                raise InterpreterError(f"unhashable dict key: {index!r}") from exc
+        raise InterpreterError(
+            "subscripting requires a list or dict built with a literal (or "
+            "a function in `allowed` returning one) -- a plain value has "
+            "no per-element trust to read"
+        )
     raise InterpreterError(f"unsupported expression: {ast.dump(node)}")
 
 

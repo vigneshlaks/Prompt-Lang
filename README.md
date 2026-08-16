@@ -74,6 +74,18 @@ needs real per-element distinctions can opt out by returning already
 `(value, Trust)`-tagged pairs itself, which auto-wrap detects and leaves
 untouched.
 
+Dicts now exist too, following the exact same rules as lists: a dict
+literal keeps each key's and value's own trust, its outer trust is the
+join of all of them, subscripting reads a value's own tag directly, and
+a plain dict from an outside function gets auto-wrapped the same way a
+plain list does. The sanitizer-laundering finding described further down
+(a sanitizer clearing a container's outer tag while its contents stay
+untrusted) was checked against dicts before shipping them, not after —
+`_has_untrusted` covers both container shapes from the start, so the
+same class of gap didn't need to be found a second time. Dicts don't
+support iteration yet (`for k in some_dict`), only literal construction
+and lookup.
+
 The feasibility question — can an open-weight model reliably generate
 valid syntax for this grammar — has a real answer across three models,
 5 tasks x 5 reps each (`feasibility_test.py`): `llama3.2:3b` 80% correct,

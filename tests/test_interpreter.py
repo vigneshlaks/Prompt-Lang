@@ -388,6 +388,150 @@ def test_list_literal_evaluates_to_a_list_of_tagged_elements():
     assert result == [(1, Trust.TRUSTED), (2, Trust.TRUSTED), (3, Trust.TRUSTED)]
 
 
+def test_dict_literal_evaluates_to_a_tagged_dict():
+    result = run('{"a": 1, "b": 2}', {})
+    assert result == {"a": (1, Trust.TRUSTED), "b": (2, Trust.TRUSTED)}
+
+
+def test_dict_subscript_reads_a_value_by_key():
+    result = run('x = {"a": 1, "b": 2}\nx["b"]', {})
+    assert result == 2
+
+
+def test_dict_subscript_missing_key_raises():
+    with pytest.raises(InterpreterError):
+        run('x = {"a": 1}\nx["missing"]', {})
+
+
+def test_dict_unpacking_is_rejected():
+    with pytest.raises(InterpreterError):
+        run('x = {"a": 1}\n{**x, "b": 2}', {})
+
+
+def test_subscripting_a_plain_value_raises():
+    with pytest.raises(InterpreterError):
+        run("x = 5\nx[0]", {})
+
+
+def test_dict_element_keeps_its_own_trust_when_subscripted():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'd = {"safe": 1, "leak": read_secret()}\napprove(d["leak"])',
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_trusted_dict_value_is_not_blocked_even_if_sibling_is_untrusted():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        'd = {"safe": 1, "leak": read_secret()}\napprove(d["safe"])',
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [1]
+
+
+def test_dict_with_untrusted_value_is_untrusted_as_a_whole():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'd = {"safe": 1, "leak": read_secret()}\napprove(d)',
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_dict_with_untrusted_key_is_untrusted_as_a_whole():
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "d = {read_secret(): 1}\napprove(d)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_subscripting_a_plain_dict_from_an_outside_function_is_auto_wrapped():
+    def get_config():
+        return {"mode": "default"}
+
+    result = run('x = get_config()\nx["mode"]', {"get_config": get_config})
+    assert result == "default"
+
+
+def test_auto_wrapped_dict_values_share_the_calls_own_untrusted_status():
+    def read_config():
+        return {"key": "sk-secret"}
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'd = read_config()\napprove(d["key"])',
+            {"read_config": read_config, "approve": approve},
+            sources=frozenset({"read_config"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+# Adversarial: the same laundering shape already found and fixed for
+# lists, checked against dicts up front rather than waiting to
+# rediscover it as a second bug later.
+
+
+def test_sanitizing_a_dict_does_not_launder_an_untrusted_value_inside_it():
+    def read_secret():
+        return "sk-secret"
+
+    def identity_sanitizer(x):
+        return x
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'd = {"leak": read_secret()}\ny = identity_sanitizer(d)\napprove(y)',
+            {
+                "read_secret": read_secret,
+                "identity_sanitizer": identity_sanitizer,
+                "approve": approve,
+            },
+            sources=frozenset({"read_secret"}),
+            sanitizers=frozenset({"identity_sanitizer"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
 def test_subscript_reads_an_element_by_index():
     result = run("x = [10, 20, 30]\nx[1]", {})
     assert result == 20
