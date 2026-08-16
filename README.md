@@ -51,6 +51,14 @@ capped at a fixed number of iterations (`MAX_WHILE_ITERATIONS` in
 `interpreter.py`); a loop whose condition never goes false raises
 `InterpreterError` instead of running forever, since a language a model
 writes programs in shouldn't be able to hang the process running it.
+That cap bounds a single loop, though, not total program execution —
+nested loops each reset their own counter independently, so two loops
+nested inside each other can each individually stay under 1000 while the
+program as a whole does far more work (found by deliberately trying it:
+300 outer times 300 inner ran 90,000 operations with neither loop ever
+exceeding the cap). Fixed with a shared `_IterationBudget`, created once
+per `run()` call and consumed by every loop pass across the whole
+program, so nesting can't multiply past one fixed total.
 
 Lists now exist too, built with a list literal, plus indexing and for
 loops. Trust is tracked per element, not per collection — a list literal
@@ -102,6 +110,28 @@ back into trusted, kept intentionally narrow: a name has this effect only
 if it's listed, never because of what the function happens to do.
 Confidentiality, the reverse direction of stopping sensitive data from
 reaching an untrusted sink, still isn't handled.
+
+Everything above tracks explicit data flow — does an untrusted value
+reach a privileged call as an argument. A second adversarial pass found
+that this misses implicit flow entirely: untrusted data can decide which
+branch of an if/while runs without ever appearing as an argument, so a
+privileged call that takes no untrusted argument (or no argument at all)
+had nothing for the check to see. `send_to_attacker()`, called from
+inside `if read_email() == "...": send_to_attacker()`, ran with no error
+at all, purely because the email's content picked that branch. A scoped,
+partial mitigation now exists: every call threads a `pc_trust` value
+(the trust of the control flow that led there), raised to untrusted on
+entering any branch or loop body whose condition was untrusted; a
+privileged call made under an untrusted `pc_trust` is refused regardless
+of its own arguments. This is deliberately narrow — it gates privileged
+calls only, not a complete implicit-flow system (an assignment made
+under a raised `pc_trust` isn't itself retroactively tainted, for
+instance). Real implicit-flow tracking done properly tends to make a
+system very restrictive, since almost anything computed inside a branch
+on untrusted data ends up needing the same treatment; most practical
+taint trackers, Perl's taint mode included, deliberately don't attempt
+it for that reason. This is a bounded compromise scoped to the one case
+adversarial testing actually found, not a claim of completeness.
 
 A shared-store test confirms the mechanism against a stateful store, not
 just a stateless stub: a planted value blocks a downstream privileged

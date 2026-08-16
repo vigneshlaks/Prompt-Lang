@@ -54,10 +54,18 @@ outcome is the safer one to prefer when the configuration itself is
 contradictory. Confidentiality (the reverse direction: stopping sensitive
 data from reaching an untrusted sink) is explicitly not handled yet.
 
-while loops are bounded: a loop that runs past MAX_WHILE_ITERATIONS raises
-InterpreterError rather than running forever. An agent-executed language
-should not be able to hang the process it runs in just because a model
-wrote a condition that never goes false.
+while loops are bounded two ways. MAX_WHILE_ITERATIONS caps a single loop
+-- a condition that never goes false raises InterpreterError instead of
+running forever. That alone doesn't bound total program execution, since
+each while node resets its own counter independently: two loops nested
+inside each other can each individually stay under the cap while the
+program as a whole does far more work than the cap suggests (found by
+deliberately trying it -- 300 outer iterations times 300 inner iterations
+ran 90,000 total operations with neither loop ever exceeding 1000). A
+shared _IterationBudget, created once per run() call and threaded through
+every exec_stmt call, counts iterations across the whole program --
+every while pass and every for pass consumes from it -- so nesting can't
+multiply past a single fixed total.
 
 Lists carry trust per element, not as one tag for the whole collection.
 A list literal evaluates each element the normal way and stores the full
@@ -77,6 +85,38 @@ information to give it. A function that needs real per-element
 precision (a list of items with genuinely different trust levels) can
 opt out of the uniform treatment by returning already-tagged pairs
 itself; auto-wrap detects that shape and leaves it untouched.
+
+A sanitizer clears the outer trust tag on whatever it returns, but if it
+just passes a tagged list through unchanged, the tags on the individual
+elements inside are untouched -- the outer tag and the nested tags can
+disagree. _has_untrusted checks both, recursively, everywhere an
+argument's trust is inspected (the privileged gate and ordinary
+propagation), so a container can't be laundered by clearing only its own
+top-level label while what's nested inside stays untrusted.
+
+Everything above tracks explicit data flow: does an untrusted value reach
+a privileged call as an argument. It does not, by itself, track implicit
+flow: untrusted data can freely decide which branch of an if/while runs
+without ever appearing as an argument, and if the privileged call in that
+branch takes no untrusted argument (or no argument at all), the argument
+check has nothing to see. A scoped, partial mitigation exists for this:
+every eval_node/exec_stmt call threads a pc_trust value (the trust of the
+control flow that led to this point in the program). Entering an if
+branch, a while body, or a for body whose controlling condition or
+iterable was UNTRUSTED raises pc_trust to UNTRUSTED for that block; a
+privileged call made while pc_trust is UNTRUSTED is refused, regardless
+of its own arguments. This is deliberately narrow -- it gates privileged
+calls only, it does not retroactively taint every value computed under a
+raised pc_trust the way a complete implicit-flow system would (assigning
+to a variable that already exists, for instance, isn't currently
+affected). Real implicit-flow tracking done properly tends to make a
+system very restrictive, since almost anything computed inside a branch
+on untrusted data ends up needing to be treated as untrusted too; most
+practical taint trackers (Perl's taint mode among them) deliberately
+don't attempt it for exactly that reason. This mitigation is a bounded
+compromise, not a complete solution, and is scoped to the one case found
+by deliberately testing it: a privileged call with no untrusted
+arguments, reachable only through a branch an untrusted value controlled.
 """
 
 from __future__ import annotations
@@ -87,6 +127,7 @@ from enum import Enum
 from typing import Any, Callable
 
 MAX_WHILE_ITERATIONS = 1000
+MAX_TOTAL_ITERATIONS = 50000
 
 _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.Eq: operator.eq,
@@ -108,10 +149,30 @@ class InterpreterError(Exception):
 
 
 class CapabilityError(InterpreterError):
-    """Raised when an UNTRUSTED value reaches a privileged operation. A
-    subclass of InterpreterError so existing callers that catch the
-    whitelist-boundary error also catch this, while code that cares can
-    still distinguish the two."""
+    """Raised when an UNTRUSTED value reaches a privileged operation,
+    either directly as an argument or by controlling which branch a
+    privileged call sits in. A subclass of InterpreterError so existing
+    callers that catch the whitelist-boundary error also catch this,
+    while code that cares can still distinguish the two."""
+
+
+class _IterationBudget:
+    """Counts loop iterations across an entire run() call, not just
+    within one loop. MAX_WHILE_ITERATIONS bounds a single while loop, but
+    that alone doesn't bound total program execution, since nested loops
+    each reset their own counter independently. One shared budget per
+    run() call closes that gap."""
+
+    def __init__(self, limit: int):
+        self.limit = limit
+        self.used = 0
+
+    def consume(self) -> None:
+        self.used += 1
+        if self.used > self.limit:
+            raise InterpreterError(
+                f"program exceeded {self.limit} total loop iterations across all loops"
+            )
 
 
 def _is_tagged_list(value: Any) -> bool:
@@ -165,12 +226,18 @@ def eval_node(
     sources: frozenset[str] = frozenset(),
     privileged: frozenset[str] = frozenset(),
     sanitizers: frozenset[str] = frozenset(),
+    pc_trust: Trust = Trust.TRUSTED,
 ) -> tuple[Any, Trust]:
     """Evaluates a single expression node: a call, a constant, a variable
-    read, or a single comparison. Each case is explicit; anything else
-    raises rather than falling back to a general evaluator. Returns
-    (value, trust), not a bare value -- every expression in this
-    language carries a Trust tag alongside its value."""
+    read, a comparison, a list literal, or a subscript. Each case is
+    explicit; anything else raises rather than falling back to a general
+    evaluator. Returns (value, trust), not a bare value -- every
+    expression in this language carries a Trust tag alongside its value.
+    pc_trust is the trust of the control flow that led here (see the
+    module docstring's implicit-flow section) -- UNTRUSTED means this
+    code is running inside a branch an untrusted value controlled, and a
+    privileged call made under it is refused regardless of its own
+    arguments."""
     if isinstance(node, ast.Call):
         if not isinstance(node.func, ast.Name):
             raise InterpreterError("calls must be a plain function name")
@@ -178,10 +245,11 @@ def eval_node(
         if name not in allowed:
             raise InterpreterError(f"unknown or disallowed name: {name}")
         arg_results = [
-            eval_node(a, allowed, env, sources, privileged, sanitizers) for a in node.args
+            eval_node(a, allowed, env, sources, privileged, sanitizers, pc_trust)
+            for a in node.args
         ]
         kwarg_results = {
-            kw.arg: eval_node(kw.value, allowed, env, sources, privileged, sanitizers)
+            kw.arg: eval_node(kw.value, allowed, env, sources, privileged, sanitizers, pc_trust)
             for kw in node.keywords
         }
         all_args = arg_results + list(kwarg_results.values())
@@ -189,6 +257,11 @@ def eval_node(
         if name in privileged and any_untrusted:
             raise CapabilityError(
                 f"privileged operation {name!r} called with an untrusted argument"
+            )
+        if name in privileged and pc_trust == Trust.UNTRUSTED:
+            raise CapabilityError(
+                f"privileged operation {name!r} called from a branch whose "
+                "condition depended on untrusted data"
             )
         args = [v for v, _ in arg_results]
         kwargs = {k: v for k, (v, _) in kwarg_results.items()}
@@ -218,21 +291,24 @@ def eval_node(
         op_type = type(node.ops[0])
         if op_type not in _COMPARE_OPS:
             raise InterpreterError(f"unsupported comparison operator: {op_type.__name__}")
-        left, _ = eval_node(node.left, allowed, env, sources, privileged, sanitizers)
-        right, _ = eval_node(node.comparators[0], allowed, env, sources, privileged, sanitizers)
-        return _COMPARE_OPS[op_type](left, right), Trust.TRUSTED
+        left, left_trust = eval_node(node.left, allowed, env, sources, privileged, sanitizers, pc_trust)
+        right, right_trust = eval_node(
+            node.comparators[0], allowed, env, sources, privileged, sanitizers, pc_trust
+        )
+        compare_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
+        return _COMPARE_OPS[op_type](left, right), compare_trust
     if isinstance(node, ast.List):
         elements = [
-            eval_node(e, allowed, env, sources, privileged, sanitizers) for e in node.elts
+            eval_node(e, allowed, env, sources, privileged, sanitizers, pc_trust) for e in node.elts
         ]
         list_trust = Trust.UNTRUSTED if any(t == Trust.UNTRUSTED for _, t in elements) else Trust.TRUSTED
         return elements, list_trust
     if isinstance(node, ast.Subscript):
         if not isinstance(node.ctx, ast.Load):
             raise InterpreterError(f"unsupported subscript usage: {ast.dump(node)}")
-        container, _ = eval_node(node.value, allowed, env, sources, privileged, sanitizers)
+        container, _ = eval_node(node.value, allowed, env, sources, privileged, sanitizers, pc_trust)
         tagged = _as_tagged_list(container, "subscripting a list")
-        index, _ = eval_node(node.slice, allowed, env, sources, privileged, sanitizers)
+        index, _ = eval_node(node.slice, allowed, env, sources, privileged, sanitizers, pc_trust)
         if not isinstance(index, int) or isinstance(index, bool):
             raise InterpreterError("list index must be an integer")
         try:
@@ -249,57 +325,77 @@ def exec_stmt(
     sources: frozenset[str] = frozenset(),
     privileged: frozenset[str] = frozenset(),
     sanitizers: frozenset[str] = frozenset(),
+    pc_trust: Trust = Trust.TRUSTED,
+    budget: _IterationBudget | None = None,
 ) -> tuple[Any, Trust] | None:
     """Executes a single statement node: an assignment, a conditional, a
     while loop, a for loop, or an expression statement. Returns
     (value, trust) for an expr_stmt, None otherwise. Unsupported
     statement types (imports, def, class, ...) raise rather than being
-    silently skipped."""
+    silently skipped. pc_trust is the trust of the control flow that led
+    here (see the module docstring's implicit-flow section); budget is
+    the shared iteration counter for the whole run() call, or None if the
+    caller doesn't want the global cap enforced."""
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
         env[node.targets[0].id] = eval_node(
-            node.value, allowed, env, sources, privileged, sanitizers
+            node.value, allowed, env, sources, privileged, sanitizers, pc_trust
         )
         return None
     if isinstance(node, ast.If):
-        test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
+        test_value, test_trust = eval_node(
+            node.test, allowed, env, sources, privileged, sanitizers, pc_trust
+        )
+        branch_pc = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
         branch = node.body if test_value else node.orelse
         result = None
         for stmt in branch:
-            result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
+            result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers, branch_pc, budget)
         return result
     if isinstance(node, ast.While):
         if node.orelse:
             raise InterpreterError("while/else is not supported")
         result = None
         iterations = 0
-        test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
+        test_value, test_trust = eval_node(
+            node.test, allowed, env, sources, privileged, sanitizers, pc_trust
+        )
         while test_value:
             iterations += 1
             if iterations > MAX_WHILE_ITERATIONS:
                 raise InterpreterError(
                     f"while loop exceeded {MAX_WHILE_ITERATIONS} iterations"
                 )
+            if budget is not None:
+                budget.consume()
+            body_pc = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
-            test_value, _ = eval_node(node.test, allowed, env, sources, privileged, sanitizers)
+                result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers, body_pc, budget)
+            test_value, test_trust = eval_node(
+                node.test, allowed, env, sources, privileged, sanitizers, pc_trust
+            )
         return result
     if isinstance(node, ast.For):
         if node.orelse:
             raise InterpreterError("for/else is not supported")
         if not isinstance(node.target, ast.Name):
             raise InterpreterError("for loop target must be a single plain name")
-        iterable, _ = eval_node(node.iter, allowed, env, sources, privileged, sanitizers)
+        iterable, iterable_trust = eval_node(
+            node.iter, allowed, env, sources, privileged, sanitizers, pc_trust
+        )
         tagged = _as_tagged_list(iterable, "a for loop's iterable")
+        body_pc = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or iterable_trust == Trust.UNTRUSTED else Trust.TRUSTED
         result = None
         for element in tagged:
+            if budget is not None:
+                budget.consume()
             env[node.target.id] = element
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
+                result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers, body_pc, budget)
         return result
     if isinstance(node, ast.Expr):
-        return eval_node(node.value, allowed, env, sources, privileged, sanitizers)
+        return eval_node(node.value, allowed, env, sources, privileged, sanitizers, pc_trust)
     raise InterpreterError(f"unsupported statement: {ast.dump(node)}")
 
 
@@ -318,15 +414,22 @@ def run(
     source itself. Returns the bare value of the last expression
     statement (the Trust tag is unwrapped here, not exposed to callers),
     or None if the program ended on an assignment or empty branch. A
-    malformed program raises InterpreterError; an UNTRUSTED value reaching a
-    name in `privileged` raises CapabilityError, a subclass of it."""
+    malformed program raises InterpreterError; an UNTRUSTED value reaching
+    a name in `privileged`, either as an argument or by controlling which
+    branch it's called from, raises CapabilityError, a subclass of it.
+    A fresh _IterationBudget is created for this call and shared across
+    every loop the program runs, bounding total iterations across the
+    whole program, not just within any single loop."""
     try:
         tree = ast.parse(source, mode="exec")
     except SyntaxError as exc:
         raise InterpreterError(f"could not parse: {exc}") from exc
     if env is None:
         env = {}
+    budget = _IterationBudget(MAX_TOTAL_ITERATIONS)
     result = None
     for stmt in tree.body:
-        result = exec_stmt(stmt, allowed, env, sources, privileged, sanitizers)
+        result = exec_stmt(
+            stmt, allowed, env, sources, privileged, sanitizers, Trust.TRUSTED, budget
+        )
     return result[0] if result is not None else None
