@@ -254,6 +254,21 @@ all passed on the first attempt. No over-restriction bug found. That's
 a real result, not proof there isn't one anywhere: these nine specific
 cases are confirmed correct, nothing more.
 
+`prompt_lang/tools.py` has one real tool now, `interpret(text, question)`
+— asks a local model to answer a question about some text, for grammar
+constructs (comparisons, arithmetic) that can't do free-text extraction
+themselves. Registered as an ordinary, non-sanitizer function on
+purpose: a model reading untrusted text isn't a trust boundary, since
+the same injected instructions the text carries can manipulate it too
+— confirmed directly, not assumed, with a real injected-content call
+that made the model ignore the actual question. This is a real,
+working patch for a real gap, but it's addressing a symptom: the
+underlying reason it's needed is that a `prompt-lang` program is
+written entirely up front, before any of it runs, so the model
+composing it never sees real tool output while deciding what to write.
+Set aside for now rather than built further, pending a decision on
+whether that write-ahead execution model is worth changing.
+
 ```bash
 pip install pytest
 pytest tests/ -v
