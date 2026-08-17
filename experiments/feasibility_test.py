@@ -301,11 +301,12 @@ def main() -> None:
         default=["llama3.1:8b", "qwen2.5:7b", "mistral:7b"],
     )
     parser.add_argument("--reps", type=int, default=5)
-    default_out = Path(__file__).resolve().parent / "feasibility_results.jsonl"
+    default_out = Path(__file__).resolve().parent / "results" / "feasibility_results.jsonl"
     parser.add_argument("--out", default=str(default_out), help="output log path")
     args = parser.parse_args()
 
     out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     results = []
     with out_path.open("w") as f:
         for model in args.models:

@@ -305,7 +305,7 @@ def main() -> None:
         default="http://localhost:11434",
         help="Ollama host to call, e.g. a runpod instance's exposed URL",
     )
-    default_out = Path(__file__).resolve().parent / "turn_by_turn_results.jsonl"
+    default_out = Path(__file__).resolve().parent / "results" / "turn_by_turn_results.jsonl"
     parser.add_argument("--out", default=str(default_out), help="output log path")
     args = parser.parse_args()
 
@@ -313,6 +313,7 @@ def main() -> None:
     OLLAMA_URL = _generate_endpoint(args.host)
 
     out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     results = []
     with out_path.open("w") as f:
         for model in args.models:
