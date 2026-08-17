@@ -174,6 +174,26 @@ from a privileged call using data it wrote to the store itself earlier in
 the same run, since every read from a shared store is treated as
 untrusted regardless of who wrote it.
 
+That test used one `run()` call reading its own write. A further pass
+tested genuinely separate agent turns — one `run()` call per agent,
+sharing only the store object — and confirmed the same guarantee holds
+across the boundary: agent A writes, a completely separate agent B call
+reads it, reprocesses it (through an ordinary function, and separately
+through a declared sanitizer), writes the result back under a new key,
+and a third agent's independent read is still correctly untrusted. This
+isn't incidental — the store only ever holds a bare value, since
+`write_shared` receives it with its trust tag already stripped, so trust
+is never carried through the data itself. Every agent's tag comes
+entirely from *that agent's own* `sources` declaration at the moment it
+reads, never from what an earlier agent did. One consequence, also
+confirmed: an agent that forgets to declare the shared read as untrusted
+only weakens its own safety — it doesn't compromise a separately,
+correctly configured agent reading the same data afterward. Concurrency
+itself — two `run()` calls actually racing on the same store — is
+deliberately outside the interpreter's scope; it holds no state across
+calls (confirmed directly), but true concurrent access is the store
+implementation's own responsibility.
+
 A first adversarial pass found a real gap, not a hypothetical one: a
 list's own outer trust tag can be cleared by any sanitizer, however
 trivial, independent of what's nested inside it. `identity_sanitizer(x):

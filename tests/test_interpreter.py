@@ -1280,6 +1280,180 @@ def test_write_then_read_own_shared_value_still_blocked_from_privileged_op():
         )
 
 
+# Multi-agent semantics (notes/ROADMAP.md item 3): does the tag survive
+# through a second agent's own separate run() call reading, reprocessing,
+# and rewriting shared data -- not just one run() call reading its own
+# write, which is all the tests above cover.
+
+
+def test_tag_survives_a_second_agents_separate_run_reading_the_first_agents_write():
+    store, write_shared, read_shared = _make_shared_store()
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    # Agent A's turn: writes to the shared store.
+    run(
+        "write_shared('inbox', 'agent A wrote this')",
+        {"write_shared": write_shared},
+    )
+
+    # Agent B's turn: a completely separate run() call, its own fresh
+    # env, reading what A wrote.
+    with pytest.raises(CapabilityError):
+        run(
+            "x = read_shared('inbox')\napprove(x)",
+            {"read_shared": read_shared, "approve": approve},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_tag_does_not_survive_through_a_sanitizer_across_the_write_read_boundary():
+    # A store only holds a bare Python value -- write_shared receives it
+    # with its tag already stripped, so a genuinely sanitized value looks
+    # identical, once written, to an unsanitized one. The next agent's
+    # read is untrusted or not based entirely on that agent's own source
+    # declaration, never on what the previous agent did to it.
+    store, write_shared, read_shared = _make_shared_store()
+    store["inbox"] = "agent A's raw data"
+
+    def identity_sanitizer(x):
+        return x
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    # Agent B reads A's data, "sanitizes" it in its own execution, and
+    # writes the sanitized result back under a new key.
+    run(
+        "raw = read_shared('inbox')\n"
+        "clean = identity_sanitizer(raw)\n"
+        "write_shared('cleaned', clean)",
+        {
+            "read_shared": read_shared,
+            "write_shared": write_shared,
+            "identity_sanitizer": identity_sanitizer,
+        },
+        sources=frozenset({"read_shared"}),
+        sanitizers=frozenset({"identity_sanitizer"}),
+    )
+
+    # Agent C reads the "cleaned" key -- still untrusted, because C's own
+    # read is what determines the tag, not B's history.
+    with pytest.raises(CapabilityError):
+        run(
+            "y = read_shared('cleaned')\napprove(y)",
+            {"read_shared": read_shared, "approve": approve},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_reprocessing_through_an_ordinary_function_still_propagates_across_the_boundary():
+    store, write_shared, read_shared = _make_shared_store()
+    store["inbox"] = "agent A's raw data"
+
+    def wrap(x):
+        return f"[{x}]"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    run(
+        "raw = read_shared('inbox')\n"
+        "wrapped = wrap(raw)\n"
+        "write_shared('processed', wrapped)",
+        {"read_shared": read_shared, "write_shared": write_shared, "wrap": wrap},
+        sources=frozenset({"read_shared"}),
+    )
+
+    with pytest.raises(CapabilityError):
+        run(
+            "z = read_shared('processed')\napprove(z)",
+            {"read_shared": read_shared, "approve": approve},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_a_misconfigured_agent_does_not_compromise_a_correctly_configured_one():
+    # Agent B's own run() call doesn't declare read_shared as a source --
+    # a misconfiguration -- so within B's own execution the value looks
+    # trusted to B. That mistake is scoped to B's own run() call; it
+    # doesn't weaken Agent C's independent, correctly configured read of
+    # the same store afterward.
+    store, write_shared, read_shared = _make_shared_store()
+    store["inbox"] = "attacker-controlled payload"
+
+    calls = []
+
+    def approve_in_b(x):
+        calls.append(x)
+
+    run(
+        "x = read_shared('inbox')\napprove_in_b(x)",
+        {"read_shared": read_shared, "approve_in_b": approve_in_b},
+        privileged=frozenset({"approve_in_b"}),
+    )
+    assert calls == ["attacker-controlled payload"]  # B's own misconfiguration, not the interpreter's
+
+    def approve_in_c(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "y = read_shared('inbox')\napprove_in_c(y)",
+            {"read_shared": read_shared, "approve_in_c": approve_in_c},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve_in_c"}),
+        )
+
+
+def test_no_interpreter_state_leaks_between_separate_run_calls():
+    calls = []
+
+    def approve(x):
+        calls.append(x)
+
+    def loop_bound():
+        return 5
+
+    run(
+        "n = 0\nwhile n < loop_bound():\n    n = bump(n)",
+        {"loop_bound": loop_bound, "bump": lambda x: x + 1},
+    )
+
+    run(
+        "approve(5)",
+        {"approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_combining_shared_store_data_with_locally_trusted_data_is_untrusted():
+    # "Merging trust levels from different sources" isn't a special
+    # multi-agent concept -- it's the same join/propagation rule already
+    # used for any function taking multiple arguments of different trust.
+    store, _, read_shared = _make_shared_store()
+    store["inbox"] = "attacker text"
+
+    def combine(a, b):
+        return f"{a}-{b}"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(combine('trusted-local-value', read_shared('inbox')))",
+            {"read_shared": read_shared, "combine": combine, "approve": approve},
+            sources=frozenset({"read_shared"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
 def test_untrusted_value_still_blocked_inside_a_conditional_branch():
     def read_secret():
         return "sk-secret"
