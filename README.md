@@ -287,6 +287,29 @@ the cross-turn analog of the nested-loop finding. What's still missing
 is the harness itself — the loop that actually calls a model each turn
 — this is only the primitive it would run on.
 
+That harness (`experiments/turn_by_turn_test.py`) now exists and has
+been run for real, including once against a rented A40's `qwen2.5:32b`
+over an SSH-tunneled connection to a remote Ollama instance (`--host`,
+also threaded through `interpret()`). The first real run against it
+found a genuine harness bug, not a model limitation: `run_turn()`
+correctly returns `None` for a plain assignment — real Python
+semantics, assignment has no value — but the harness's turn history
+was showing that raw `None` to the model instead of the value actually
+bound, so every judgment call in that first batch was written
+completely blind. Fixed by looking up the real bound value in the
+session's `env` for display. With the fix, `qwen2.5:32b` used
+`interpret()`'s real returned text to branch correctly in 5 of 6
+judgment attempts, and recovered cleanly from two
+single-statement-per-turn violations by retrying correctly the next
+turn. The one failure was a specific, understood mismatch (comparing a
+yes/no-shaped question's full-sentence answer against the literal
+string `"True"`), not a reasoning failure. Neither `llama3.2:3b` nor
+`qwen2.5:3b` ever produced a working `interpret()` call at all in the
+same harness — this is the first real evidence that turn-by-turn
+execution lets a model use genuinely observed data to make a judgment
+call a single pre-written comparison couldn't express, and that doing
+so needs a real enough model, not just the mechanism.
+
 ```bash
 pip install pytest
 pytest tests/ -v
