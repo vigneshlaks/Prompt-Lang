@@ -1635,7 +1635,7 @@ def test_division_by_zero_propagates_as_a_normal_python_exception():
 
 def test_unsupported_binop_operator_raises():
     with pytest.raises(InterpreterError):
-        run("2 ** 3", {})
+        run("2 & 3", {})
 
 
 def test_arithmetic_result_is_untrusted_if_either_operand_is_untrusted():
@@ -1701,6 +1701,292 @@ def test_privileged_call_blocked_behind_an_untrusted_arithmetic_branch_condition
             sources=frozenset({"read_secret"}),
             privileged=frozenset({"approve"}),
         )
+
+
+# Full operator sweep: remaining arithmetic (//, %, **), unary (-, +, not),
+# boolean (and, or), and chained comparisons. Same shape and rigor as the
+# +/-/*/ additions above -- correctness, capability propagation, and a
+# pc_trust/pc_secrecy regression test for every new node type used as a
+# branch condition, since that's exactly the category of gap the original
+# ast.Compare fix (and the arithmetic one after it) needed.
+
+
+def test_floor_division():
+    assert run("10 // 3", {}) == 3
+
+
+def test_modulo():
+    assert run("10 % 3", {}) == 1
+
+
+def test_exponentiation():
+    assert run("2 ** 10", {}) == 1024
+
+
+def test_exponent_magnitude_over_the_cap_raises():
+    with pytest.raises(InterpreterError):
+        run("2 ** 999999999999", {})
+
+
+def test_large_base_with_small_exponent_is_not_blocked_by_the_exponent_cap():
+    # The guard is on the exponent's magnitude, not the base's -- a large
+    # base raised to a small exponent is cheap and should not be rejected.
+    assert run("(10 ** 300) ** 2", {}) == 10 ** 600
+
+
+def test_unary_minus_makes_negative_literals_work():
+    # Before this, -5 had no supported AST case at all: ast.parse never
+    # folds a negative literal into one constant, it's UnaryOp(USub,
+    # Constant(5)), two nodes.
+    assert run("-5", {}) == -5
+
+
+def test_unary_plus():
+    assert run("+5", {}) == 5
+
+
+def test_unary_not():
+    assert run("not True", {}) is False
+    assert run("not False", {}) is True
+
+
+def test_boolean_and():
+    assert run("True and False", {}) is False
+    assert run("True and True", {}) is True
+
+
+def test_boolean_or():
+    assert run("False or True", {}) is True
+    assert run("False or False", {}) is False
+
+
+def test_boolean_and_short_circuits_and_does_not_evaluate_the_second_operand():
+    calls = []
+
+    def side_effect():
+        calls.append("called")
+        return True
+
+    run("False and side_effect()", {"side_effect": side_effect})
+    assert calls == []
+
+
+def test_boolean_or_short_circuits_and_does_not_evaluate_the_second_operand():
+    calls = []
+
+    def side_effect():
+        calls.append("called")
+        return True
+
+    run("True or side_effect()", {"side_effect": side_effect})
+    assert calls == []
+
+
+def test_chained_comparison():
+    assert run("0 <= 5 <= 100", {}) is True
+    assert run("0 <= 500 <= 100", {}) is False
+
+
+def test_chained_comparison_short_circuits_and_evaluates_each_operand_once():
+    calls = []
+
+    def read():
+        calls.append("read")
+        return 5
+
+    # 10 < 5 is already false, so read() (standing in for the third
+    # operand) must never be called.
+    result = run("10 < 5 < read()", {"read": read})
+    assert result is False
+    assert calls == []
+
+
+def test_chained_comparison_evaluates_a_shared_operand_exactly_once():
+    calls = []
+
+    def middle():
+        calls.append("middle")
+        return 5
+
+    # middle() is used in both comparisons but must only be called once.
+    run("1 < middle() < 10", {"middle": middle})
+    assert calls == ["middle"]
+
+
+def test_unary_operand_keeps_its_own_trust():
+    def read_secret():
+        return 5
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(-read_secret())",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_boolean_result_is_untrusted_if_an_evaluated_operand_is_untrusted():
+    def read_secret():
+        return True
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(True and read_secret())",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_boolean_result_is_trusted_if_the_untrusted_operand_was_short_circuited_away():
+    calls = []
+
+    def read_secret():
+        raise AssertionError("must not be called: short-circuited away")
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "approve(False and read_secret())",
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [False]
+
+
+def test_chained_comparison_result_is_untrusted_if_an_evaluated_operand_is_untrusted():
+    def read_secret():
+        return 5
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(1 < read_secret() < 10)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_privileged_call_blocked_behind_an_untrusted_unary_branch_condition():
+    def read_secret():
+        return False
+
+    def approve():
+        raise AssertionError("must not run: reached only via an untrusted condition")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "if not read_secret():\n    approve()",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_privileged_call_blocked_behind_an_untrusted_boolean_branch_condition():
+    def read_secret():
+        return True
+
+    def approve():
+        raise AssertionError("must not run: reached only via an untrusted condition")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "if True and read_secret():\n    approve()",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_privileged_call_blocked_behind_a_chained_comparison_branch_condition():
+    def read_secret():
+        return 5
+
+    def approve():
+        raise AssertionError("must not run: reached only via an untrusted condition")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "if 1 < read_secret() < 10:\n    approve()",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_sink_call_blocked_behind_a_secret_boolean_branch_condition():
+    def read_api_key():
+        return True
+
+    def reveal():
+        raise AssertionError("must not run: reached only via a secret condition")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "if True and read_api_key():\n    reveal()",
+            {"read_api_key": read_api_key, "reveal": reveal},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"reveal"}),
+        )
+
+
+def test_sink_call_blocked_behind_a_secret_chained_comparison_branch_condition():
+    def read_api_key_num():
+        return 5
+
+    def reveal():
+        raise AssertionError("must not run: reached only via a secret condition")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "if 1 < read_api_key_num() < 10:\n    reveal()",
+            {"read_api_key_num": read_api_key_num, "reveal": reveal},
+            confidential=frozenset({"read_api_key_num"}),
+            sinks=frozenset({"reveal"}),
+        )
+
+
+def test_sink_call_blocked_behind_a_secret_unary_branch_condition():
+    def read_api_key_bool():
+        return False
+
+    def reveal():
+        raise AssertionError("must not run: reached only via a secret condition")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "if not read_api_key_bool():\n    reveal()",
+            {"read_api_key_bool": read_api_key_bool, "reveal": reveal},
+            confidential=frozenset({"read_api_key_bool"}),
+            sinks=frozenset({"reveal"}),
+        )
+
+
+def test_privileged_call_not_blocked_behind_a_fully_trusted_boolean_condition():
+    calls = []
+
+    def approve():
+        calls.append("approved")
+
+    run(
+        "if True and 1 < 2 < 3:\n    approve()",
+        {"approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == ["approved"]
 
 
 # Over-restriction check (the FIDES comparison from notes/ROADMAP.md): does

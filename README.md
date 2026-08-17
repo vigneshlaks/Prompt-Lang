@@ -86,17 +86,37 @@ same class of gap didn't need to be found a second time. Dicts don't
 support iteration yet (`for k in some_dict`), only literal construction
 and lookup.
 
-Arithmetic (`+`, `-`, `*`, `/`) exists now too, handled the same way as
-comparisons: a small operator table, and a result whose trust and
-secrecy are the join of its two operands — an arithmetic expression
-used directly as an `if`/`while` condition correctly raises `pc_trust`/
-`pc_secrecy` the same way a comparison does, confirmed directly rather
-than assumed. A malformed operation (division by zero, adding a number
-to a string) isn't caught or converted — it raises whatever ordinary
-Python exception it would outside this interpreter, the same stance
-already taken for a whitelisted call given the wrong argument types.
-The whitelist boundary governs what's allowed to run, not every mistake
-a legal operation can still make.
+The operator set is complete now: arithmetic (`+`, `-`, `*`, `/`, `//`,
+`%`, `**`), unary (`-x`, `+x`, `not x`), boolean (`and`, `or`), and
+chained comparisons (`0 <= x <= 100`), all handled the same way plain
+comparisons were — small operator tables, and a result whose trust and
+secrecy are the join of whichever operands actually got evaluated.
+`and`/`or`/chained comparisons genuinely short-circuit, matching real
+Python: confirmed directly, not assumed, that a short-circuited-away
+operand is never evaluated at all (a side-effecting stub placed there
+never runs) and that a shared operand in a chain like `a < b < c` is
+evaluated exactly once, not twice. Every new construct was checked as a
+branch condition on both `pc_trust` and `pc_secrecy`, the same category
+of gap the original `pc_trust` fix needed for `ast.Compare` when it
+still hardcoded `Trust.TRUSTED`.
+
+Adding unary minus fixed a real, evident gap, not just a missing
+operator: `ast.parse` never folds a negative literal into one constant
+— `-5` parses as `UnaryOp(USub, Constant(5))`, two nodes — so before
+this, the interpreter had no negative number literals at all. `**` gets
+one extra check the other operators don't: a single expression like
+`x ** huge_number` can hang the process or exhaust memory in one step,
+with no exception to catch and no loop for a cap to count — the same
+class of concern loops had before `MAX_WHILE_ITERATIONS`, just faster.
+`MAX_EXPONENT` caps the exponent's magnitude before `**` runs; the base
+is unrestricted, since a large base to a small exponent is cheap.
+
+A malformed operation (division by zero, adding a number to a string)
+isn't caught or converted — it raises whatever ordinary Python
+exception it would outside this interpreter, the same stance already
+taken for a whitelisted call given the wrong argument types. The
+whitelist boundary governs what's allowed to run, not every mistake a
+legal operation can still make.
 
 The feasibility question — can an open-weight model reliably generate
 valid syntax for this grammar — has a real answer across three models,

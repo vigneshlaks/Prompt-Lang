@@ -20,10 +20,13 @@ Toy grammar supported so far (informal EBNF):
     while_stmt := "while" expr ":" NEWLINE INDENT statement+ DEDENT
     for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
-    expr       := call | compare | arith | subscript | list_expr | NAME | literal
+    expr       := call | compare | arith | boolean | unary | subscript
+                  | list_expr | dict_expr | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
-    compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=") expr
-    arith      := expr ("+" | "-" | "*" | "/") expr
+    compare    := expr (("==" | "!=" | "<" | "<=" | ">" | ">=") expr)+
+    arith      := expr ("+" | "-" | "*" | "/" | "//" | "%" | "**") expr
+    boolean    := expr ("and" | "or") expr
+    unary      := ("-" | "+" | "not") expr
     subscript  := expr "[" expr "]"
     list_expr  := "[" (expr ("," expr)*)? "]"
     dict_expr  := "{" (expr ":" expr ("," expr ":" expr)*)? "}"
@@ -155,16 +158,51 @@ cases found by deliberately testing for them: a privileged or sink call
 with no matching-tagged arguments, reachable only through a branch a
 tagged value controlled.
 
-Arithmetic (+, -, *, /) is handled the same way comparisons are: a small
-dict maps AST operator node types to the matching function from the
-`operator` module, and the result's trust and secrecy are the join of
-its two operands, exactly like ast.Compare already computes. A malformed
-operation (dividing by zero, adding a number to a string) is not caught
-or converted into an InterpreterError -- it raises whatever ordinary
-Python exception it would outside this interpreter, the same way a
-whitelisted function called with the wrong argument types already does.
-The whitelist boundary is about what's allowed to run, not about
+Arithmetic (+, -, *, /, //, %, **) is handled the same way comparisons
+are: a small dict maps AST operator node types to the matching function
+from the `operator` module, and the result's trust and secrecy are the
+join of its two operands, exactly like ast.Compare already computes. A
+malformed operation (dividing by zero, adding a number to a string) is
+not caught or converted into an InterpreterError -- it raises whatever
+ordinary Python exception it would outside this interpreter, the same
+way a whitelisted function called with the wrong argument types already
+does. The whitelist boundary is about what's allowed to run, not about
 catching every mistake a legal operation can still make.
+
+** (exponentiation) is the one arithmetic operator that gets an extra
+check first: a single expression like x ** huge_number can hang the
+process or exhaust memory in one step, with no exception to catch and
+no loop for MAX_WHILE_ITERATIONS to bound -- the same class of concern
+loops had before that cap existed, just faster and with no iteration to
+count. MAX_EXPONENT caps the exponent's magnitude before ** ever runs;
+the base is unrestricted, since a large base raised to a small exponent
+is cheap (squaring a big number is not the danger; a small number raised
+to a huge one is).
+
+ast.Compare now supports chained comparisons (0 <= x <= 100), not just
+a single pair. Each operand is still evaluated exactly once, left to
+right, matching real Python semantics -- x() < y() < z() calls y() once,
+not twice, even though y's value is used in two comparisons. The whole
+chain short-circuits the moment one comparison is false, the same way
+Python's own chained comparisons do, and only operands actually
+evaluated before the short-circuit contribute to the result's trust and
+secrecy; an operand skipped because an earlier comparison already failed
+carries no information into the result.
+
+Boolean operators (and, or) short-circuit the same way: `and` stops at
+the first falsy operand, `or` stops at the first truthy one, evaluating
+operands left to right and stopping as soon as the outcome is decided,
+exactly like real Python. Trust and secrecy accumulate only from
+operands that were actually evaluated -- a later operand skipped by
+short-circuiting was never read, so its tag can't matter to the result.
+
+Unary operators (-x, +x, not x) pass the single operand's trust and
+secrecy straight through unchanged; there's only one input; there's
+nothing to join. Adding unary minus specifically also fixes a real gap,
+not just a missing operator: ast.parse never folds a negative literal
+into a single constant -- `-5` parses as UnaryOp(USub, Constant(5)), two
+nodes, not one -- so before this, the interpreter had no negative number
+literals at all, not even as simple as `-5` on its own.
 """
 
 from __future__ import annotations
@@ -176,6 +214,7 @@ from typing import Any, Callable
 
 MAX_WHILE_ITERATIONS = 1000
 MAX_TOTAL_ITERATIONS = 50000
+MAX_EXPONENT = 10_000
 
 _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.Eq: operator.eq,
@@ -191,6 +230,15 @@ _BINOP_OPS: dict[type, Callable[[Any, Any], Any]] = {
     ast.Sub: operator.sub,
     ast.Mult: operator.mul,
     ast.Div: operator.truediv,
+    ast.FloorDiv: operator.floordiv,
+    ast.Mod: operator.mod,
+    ast.Pow: operator.pow,
+}
+
+_UNARY_OPS: dict[type, Callable[[Any], Any]] = {
+    ast.USub: operator.neg,
+    ast.UAdd: operator.pos,
+    ast.Not: operator.not_,
 }
 
 
@@ -433,24 +481,58 @@ def eval_node(
             raise InterpreterError(f"undefined variable: {node.id}")
         return env[node.id]
     if isinstance(node, ast.Compare):
-        if len(node.ops) != 1 or len(node.comparators) != 1:
-            raise InterpreterError("only single comparisons are supported, e.g. x == 1")
-        op_type = type(node.ops[0])
-        if op_type not in _COMPARE_OPS:
-            raise InterpreterError(f"unsupported comparison operator: {op_type.__name__}")
-        left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
-        right, right_trust, right_secrecy = eval_node(
-            node.comparators[0], allowed, env, caps, pc_trust, pc_secrecy
+        for op_node in node.ops:
+            if type(op_node) not in _COMPARE_OPS:
+                raise InterpreterError(f"unsupported comparison operator: {type(op_node).__name__}")
+        result = True
+        result_trust = Trust.TRUSTED
+        result_secrecy = Secrecy.PUBLIC
+        prev, prev_trust, prev_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
+        result_trust = Trust.UNTRUSTED if prev_trust == Trust.UNTRUSTED else result_trust
+        result_secrecy = Secrecy.SECRET if prev_secrecy == Secrecy.SECRET else result_secrecy
+        for op_node, comparator_node in zip(node.ops, node.comparators):
+            curr, curr_trust, curr_secrecy = eval_node(
+                comparator_node, allowed, env, caps, pc_trust, pc_secrecy
+            )
+            result_trust = Trust.UNTRUSTED if curr_trust == Trust.UNTRUSTED else result_trust
+            result_secrecy = Secrecy.SECRET if curr_secrecy == Secrecy.SECRET else result_secrecy
+            if not _COMPARE_OPS[type(op_node)](prev, curr):
+                result = False
+                break
+            prev, prev_trust, prev_secrecy = curr, curr_trust, curr_secrecy
+        return result, result_trust, result_secrecy
+    if isinstance(node, ast.BoolOp):
+        op_type = type(node.op)
+        result = None
+        result_trust = Trust.TRUSTED
+        result_secrecy = Secrecy.PUBLIC
+        for value_node in node.values:
+            result, value_trust, value_secrecy = eval_node(
+                value_node, allowed, env, caps, pc_trust, pc_secrecy
+            )
+            result_trust = Trust.UNTRUSTED if value_trust == Trust.UNTRUSTED else result_trust
+            result_secrecy = Secrecy.SECRET if value_secrecy == Secrecy.SECRET else result_secrecy
+            if op_type is ast.And and not result:
+                break
+            if op_type is ast.Or and result:
+                break
+        return result, result_trust, result_secrecy
+    if isinstance(node, ast.UnaryOp):
+        op_type = type(node.op)
+        if op_type not in _UNARY_OPS:
+            raise InterpreterError(f"unsupported unary operator: {op_type.__name__}")
+        operand, operand_trust, operand_secrecy = eval_node(
+            node.operand, allowed, env, caps, pc_trust, pc_secrecy
         )
-        compare_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
-        compare_secrecy = Secrecy.SECRET if Secrecy.SECRET in (left_secrecy, right_secrecy) else Secrecy.PUBLIC
-        return _COMPARE_OPS[op_type](left, right), compare_trust, compare_secrecy
+        return _UNARY_OPS[op_type](operand), operand_trust, operand_secrecy
     if isinstance(node, ast.BinOp):
         op_type = type(node.op)
         if op_type not in _BINOP_OPS:
             raise InterpreterError(f"unsupported arithmetic operator: {op_type.__name__}")
         left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
         right, right_trust, right_secrecy = eval_node(node.right, allowed, env, caps, pc_trust, pc_secrecy)
+        if op_type is ast.Pow and isinstance(right, (int, float)) and abs(right) > MAX_EXPONENT:
+            raise InterpreterError(f"exponent magnitude exceeds {MAX_EXPONENT}")
         binop_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
         binop_secrecy = Secrecy.SECRET if Secrecy.SECRET in (left_secrecy, right_secrecy) else Secrecy.PUBLIC
         return _BINOP_OPS[op_type](left, right), binop_trust, binop_secrecy
