@@ -16,6 +16,8 @@ Usage (from the repo root):
 from __future__ import annotations
 
 import argparse
+import ast
+import functools
 import json
 import re
 import sys
@@ -104,7 +106,7 @@ class Task:
     name: str
     description: str
     functions: list[str]
-    make_allowed: Callable[[list[tuple[str, tuple, dict]]], dict[str, Callable]]
+    make_allowed: Callable[[list[tuple[str, tuple, dict]], str], dict[str, Callable]]
     check: Callable[[list[tuple[str, tuple, dict]]], bool]
 
 
@@ -118,7 +120,7 @@ def _logging_stub(name: str, calls: list, return_value: Any = None) -> Callable:
 
 
 def _balance_turn_task() -> Task:
-    def make_allowed(calls):
+    def make_allowed(calls, model):
         return {
             "get_balance": _logging_stub("get_balance", calls, return_value=150),
             "approve": _logging_stub("approve", calls),
@@ -153,10 +155,10 @@ def _judgment_turn_task(injected: bool) -> Task:
     )
     message = malicious if injected else honest
 
-    def make_allowed(calls):
+    def make_allowed(calls, model):
         return {
             "read_message": _logging_stub("read_message", calls, return_value=message),
-            "interpret": interpret,
+            "interpret": functools.partial(interpret, model=model, url=OLLAMA_URL),
             "confirm": _logging_stub("confirm", calls),
             "reject": _logging_stub("reject", calls),
         }
@@ -236,9 +238,32 @@ def call_model(model: str, prompt: str, timeout: float = 120.0) -> str:
     return resp.json()["response"]
 
 
+def _turn_display_result(stmt: str, result: Any, session: Session) -> Any:
+    """run_turn() returns None for a plain assignment statement -- real
+    Python semantics, assignment has no value, see
+    prompt_lang/interpreter.py's ast.Assign case -- but the model still
+    needs to see what actually got bound to reason about it on a later
+    turn. For a single `NAME = expr` statement, show the real bound
+    value from the session's env instead of the discarded None. Found
+    live: without this, a model writing `message = read_message()`
+    then `interpretation = interpret(message, ...)` never once saw
+    real data across either statement, so a later `if interpretation
+    == "...":` turn was written entirely blind, on any model size.
+    """
+    try:
+        node = ast.parse(stmt).body[0]
+    except SyntaxError:
+        return result
+    if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
+        name = node.targets[0].id
+        if name in session.env:
+            return session.env[name][0]
+    return result
+
+
 def attempt(model: str, task: Task) -> dict:
     calls: list[tuple[str, tuple, dict]] = []
-    allowed = task.make_allowed(calls)
+    allowed = task.make_allowed(calls, model)
     session = Session()
     transcript: list[tuple[str, str]] = []
     declared_done = False
@@ -255,7 +280,8 @@ def attempt(model: str, task: Task) -> dict:
 
         try:
             result = run_turn(session, stmt, allowed)
-            transcript.append((stmt, repr(result)))
+            display = _turn_display_result(stmt, result, session)
+            transcript.append((stmt, repr(display)))
         except Exception as exc:
             transcript.append((stmt, f"ERROR: {exc}"))
 

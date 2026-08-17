@@ -12,9 +12,14 @@ OLLAMA_URL = "http://localhost:11434/api/generate"
 DEFAULT_INTERPRET_MODEL = "llama3.2:3b"
 
 
-def interpret(text: str, question: str, model: str = DEFAULT_INTERPRET_MODEL) -> str:
-    """Asks a local model to answer `question` using only `text`. Meant
-    to be registered as an ordinary (non-sanitizer) entry in a program's
+def interpret(
+    text: str,
+    question: str,
+    model: str = DEFAULT_INTERPRET_MODEL,
+    url: str = OLLAMA_URL,
+) -> str:
+    """Asks a model to answer `question` using only `text`. Meant to be
+    registered as an ordinary (non-sanitizer) entry in a program's
     `allowed` dict -- deliberately not a sanitizer, and that's a
     security-relevant choice, not an oversight. A model reading
     untrusted text to extract or summarize something is reading the
@@ -24,6 +29,12 @@ def interpret(text: str, question: str, model: str = DEFAULT_INTERPRET_MODEL) ->
     already keeps the result tagged the same as its input -- untrusted
     text in, untrusted answer out -- with no interpreter change needed
     to make that true.
+
+    `url` defaults to local Ollama but accepts any Ollama-compatible
+    `/api/generate` endpoint, e.g. a rented GPU's exposed URL, so the
+    same function can be pointed at a bigger model without editing this
+    file -- pass `url=my_endpoint` (built the same way
+    `experiments/turn_by_turn_test.py`'s `_generate_endpoint` does).
     """
     prompt = (
         "Answer the question using only the text below, as briefly as "
@@ -31,9 +42,9 @@ def interpret(text: str, question: str, model: str = DEFAULT_INTERPRET_MODEL) ->
         f"Text:\n{text}\n\nQuestion: {question}\nAnswer:"
     )
     response = requests.post(
-        OLLAMA_URL,
+        url,
         json={"model": model, "prompt": prompt, "stream": False},
-        timeout=60.0,
+        timeout=120.0,
     )
     response.raise_for_status()
     return response.json()["response"].strip()
