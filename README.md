@@ -269,6 +269,24 @@ composing it never sees real tool output while deciding what to write.
 Set aside for now rather than built further, pending a decision on
 whether that write-ahead execution model is worth changing.
 
+That question now has a real answer: `Session`/`run_turn()` let a
+program run one statement at a time instead of all at once, against
+state (variable bindings, the iteration budget) that persists across
+calls — so a driving harness can show a statement's real result back
+to a model before asking for the next one. `eval_node`/`exec_stmt`
+didn't change at all for this; it's only a different way of creating
+and sharing the state `run()` already creates fresh each call.
+`pc_trust`/`pc_secrecy` still start fresh for each statement, which
+isn't new — `run()`'s own top-level loop already did that for every
+statement in one program; a turn just lets each one arrive in its own
+call. The budget is shared across turns the same way it's shared
+across loops in one `run()` call, closing the identical class of gap
+the identical way — confirmed directly: ten turns of a 50-iteration
+loop each (500 total) against a 100-iteration budget correctly raised,
+the cross-turn analog of the nested-loop finding. What's still missing
+is the harness itself — the loop that actually calls a model each turn
+— this is only the primitive it would run on.
+
 ```bash
 pip install pytest
 pytest tests/ -v

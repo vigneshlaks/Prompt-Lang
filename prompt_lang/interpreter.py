@@ -203,6 +203,24 @@ not just a missing operator: ast.parse never folds a negative literal
 into a single constant -- `-5` parses as UnaryOp(USub, Constant(5)), two
 nodes, not one -- so before this, the interpreter had no negative number
 literals at all, not even as simple as `-5` on its own.
+
+run() executes a whole program blind: a model writes every statement
+before any of them run, never seeing a real result along the way.
+Session and run_turn() are the alternative -- one statement at a time,
+against state (env, the iteration budget) that persists across calls,
+so a driving harness can show the real result of one statement back to
+a model before asking it to write the next one. This doesn't change
+eval_node or exec_stmt at all; it only changes what creates env and the
+budget and when. pc_trust and pc_secrecy still start fresh
+(TRUSTED/PUBLIC) for each statement passed to run_turn(), which isn't a
+new rule -- run()'s own top-level loop already resets both for every
+top-level statement in a single program, so run_turn() just lets each
+of those arrive in its own call instead of all together in one source
+string. A Session's budget is shared across every turn the same way
+run()'s budget is shared across every loop in one program, closing the
+same class of gap the same way: many turns, each individually
+unremarkable, can't multiply past a fixed total any more than many
+nested loops could.
 """
 
 from __future__ import annotations
@@ -709,4 +727,60 @@ def run(
     result = None
     for stmt in tree.body:
         result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, Secrecy.PUBLIC, budget)
+    return result[0] if result is not None else None
+
+
+class Session:
+    """Holds the state that persists across multiple turns of
+    incremental execution: variable bindings and the total iteration
+    budget for one task. run() executes a whole program blind -- the
+    model writes every statement before any of them run, never seeing a
+    real result along the way. run_turn() is the alternative: one
+    statement at a time, against a Session's accumulated state, so a
+    driving harness can show the real result back to the model before
+    asking for the next statement. Two Sessions are always independent;
+    nothing here is process-global."""
+
+    def __init__(self, budget_limit: int = MAX_TOTAL_ITERATIONS):
+        self.env: dict[str, tuple[Any, Trust, Secrecy]] = {}
+        self.budget = _IterationBudget(budget_limit)
+
+
+def run_turn(
+    session: Session,
+    source: str,
+    allowed: dict[str, Callable],
+    *,
+    sources: frozenset[str] = frozenset(),
+    privileged: frozenset[str] = frozenset(),
+    sanitizers: frozenset[str] = frozenset(),
+    confidential: frozenset[str] = frozenset(),
+    sinks: frozenset[str] = frozenset(),
+    declassifiers: frozenset[str] = frozenset(),
+) -> Any:
+    """Parses source as exactly one top-level statement and executes it
+    against session's accumulated env and budget, returning the bare
+    value the same way run() does. Raises InterpreterError if source
+    contains anything other than exactly one statement -- a turn is one
+    statement, not a program, and that's the entire difference from
+    run(). pc_trust and pc_secrecy start fresh (TRUSTED/PUBLIC) for the
+    statement, the same way every top-level statement inside a single
+    run() call already does -- run_turn() doesn't change that behavior,
+    it just lets each top-level statement arrive in its own call instead
+    of all together in one source string. Capability rules
+    (sources/privileged/etc.) are passed per call, same as run(), so a
+    driving harness can keep them fixed across a task's turns or change
+    them if it has a reason to; the budget and env are what's shared."""
+    try:
+        tree = ast.parse(source, mode="exec")
+    except SyntaxError as exc:
+        raise InterpreterError(f"could not parse: {exc}") from exc
+    if len(tree.body) != 1:
+        raise InterpreterError(
+            f"a turn must be exactly one statement, got {len(tree.body)}"
+        )
+    caps = _Capabilities(sources, privileged, sanitizers, confidential, sinks, declassifiers)
+    result = exec_stmt(
+        tree.body[0], allowed, session.env, caps, Trust.TRUSTED, Secrecy.PUBLIC, session.budget
+    )
     return result[0] if result is not None else None
