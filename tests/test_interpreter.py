@@ -4,7 +4,7 @@ parsing and dispatch pattern for a single tool call.
 """
 
 import pytest
-from interpreter import (
+from prompt_lang.interpreter import (
     MAX_WHILE_ITERATIONS,
     CapabilityError,
     ConfidentialityError,

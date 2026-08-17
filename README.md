@@ -7,13 +7,13 @@ of.
 
 ## Where this starts
 
-`interpreter.py` is the seed of the actual interpreter: a safe core that
+`prompt_lang/interpreter.py` is the seed of the actual interpreter: a safe core that
 parses a model's output with `ast.parse` and dispatches only through an
 explicit whitelist, never `eval()`. It's ported from `provenance-ac`'s
 `agent_demo/agent_loop.py`, which used the identical pattern for a single
 tool call. It currently supports a toy grammar of function calls,
 assignment, if/else conditionals, while and for loops, and lists (see the
-grammar in `interpreter.py`'s module docstring); growing it further means
+grammar in `prompt_lang/interpreter.py`'s module docstring); growing it further means
 adding more statement types to `eval_node`/`exec_stmt`, not relaxing the
 whitelist check.
 
@@ -48,7 +48,7 @@ perform, a far smaller surface than unrestricted Python.
 Parsing, dispatch, assignment, if/else conditionals, and bounded while
 loops exist, each with a passing and a rejected-case test. Loops are
 capped at a fixed number of iterations (`MAX_WHILE_ITERATIONS` in
-`interpreter.py`); a loop whose condition never goes false raises
+`prompt_lang/interpreter.py`); a loop whose condition never goes false raises
 `InterpreterError` instead of running forever, since a language a model
 writes programs in shouldn't be able to hang the process running it.
 That cap bounds a single loop, though, not total program execution —
@@ -88,7 +88,7 @@ and lookup.
 
 The feasibility question — can an open-weight model reliably generate
 valid syntax for this grammar — has a real answer across three models,
-5 tasks x 5 reps each (`feasibility_test.py`): `llama3.2:3b` 80% correct,
+5 tasks x 5 reps each (`experiments/feasibility_test.py`): `llama3.2:3b` 80% correct,
 `qwen2.5:3b` 56%, and `qwen2.5:32b` 100%, run on a rented A40 GPU since
 the 32B model doesn't fit on this machine's 8GB of RAM. Failures split
 cleanly between invalid syntax, valid Python outside this grammar (the
@@ -204,7 +204,7 @@ whole list to a privileged function slipped through untouched. Indexing
 into the list still saw the correct nested tag; only passing the
 container as a whole was affected. Fixed by making the privileged check
 and trust propagation both look recursively inside a tagged list's
-elements (`_has_untrusted` in `interpreter.py`), not just at a value's
+elements (`_has_untrusted` in `prompt_lang/interpreter.py`), not just at a value's
 own outer tag, so a sanitizer can't launder a container's contents by
 clearing only its own top-level label.
 

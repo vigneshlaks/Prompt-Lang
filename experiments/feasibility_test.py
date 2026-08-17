@@ -11,9 +11,9 @@ Requires Ollama running locally (`ollama serve`, usually automatic after
 
     ollama pull llama3.1:8b
 
-Usage:
-    python3 feasibility_test.py
-    python3 feasibility_test.py --models llama3.1:8b qwen2.5:7b --reps 5
+Usage (from the repo root):
+    python3 experiments/feasibility_test.py
+    python3 experiments/feasibility_test.py --models llama3.1:8b qwen2.5:7b --reps 5
 """
 
 from __future__ import annotations
@@ -22,13 +22,16 @@ import argparse
 import ast
 import json
 import re
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
 
 import requests
 
-from interpreter import InterpreterError, run
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+
+from prompt_lang.interpreter import InterpreterError, run
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
 
@@ -206,38 +209,12 @@ def _branching_compute_task() -> Task:
     )
 
 
-def _loop_count_task() -> Task:
-    def make_allowed(calls):
-        return {
-            "get_start": _logging_stub("get_start", calls, return_value=0),
-            "increment": lambda x: x + 1,
-            "finish": _logging_stub("finish", calls),
-        }
-
-    def check(calls):
-        finish_calls = [c for c in calls if c[0] == "finish"]
-        return len(finish_calls) == 1 and finish_calls[0][1] == (5,)
-
-    return Task(
-        name="loop_count",
-        description=(
-            "Get a starting value with get_start(). While the value is "
-            "less than 5, reassign it to the result of increment(value). "
-            "Then pass the final value to finish()."
-        ),
-        functions=["get_start", "increment", "finish"],
-        make_allowed=make_allowed,
-        check=check,
-    )
-
-
 TASKS = [
     _balance_task(),
     _admin_task(),
     _chain_task(),
     _score_equality_task(),
     _branching_compute_task(),
-    _loop_count_task(),
 ]
 
 
@@ -248,8 +225,8 @@ grammar is valid:
 
 {GRAMMAR}
 The only functions available for this task are: {", ".join(task.functions)}.
-Do not use any other functions, operators, or statements (no imports, \
-no arithmetic operators, no attribute access, no for loops).
+Do not use any other functions, operators, or statements (no loops, no \
+imports, no arithmetic operators, no attribute access).
 
 {FEW_SHOT}
 Task: {task.description}
@@ -324,21 +301,15 @@ def main() -> None:
         default=["llama3.1:8b", "qwen2.5:7b", "mistral:7b"],
     )
     parser.add_argument("--reps", type=int, default=5)
-    parser.add_argument(
-        "--out", default="feasibility_results.jsonl", help="output log path"
-    )
-    parser.add_argument(
-        "--tasks", nargs="+", default=None, help="only run these task names"
-    )
+    default_out = Path(__file__).resolve().parent / "feasibility_results.jsonl"
+    parser.add_argument("--out", default=str(default_out), help="output log path")
     args = parser.parse_args()
-
-    tasks_to_run = [t for t in TASKS if args.tasks is None or t.name in args.tasks]
 
     out_path = Path(args.out)
     results = []
     with out_path.open("w") as f:
         for model in args.models:
-            for task in tasks_to_run:
+            for task in TASKS:
                 for rep in range(args.reps):
                     try:
                         result = attempt(model, task)
