@@ -20,9 +20,10 @@ Toy grammar supported so far (informal EBNF):
     while_stmt := "while" expr ":" NEWLINE INDENT statement+ DEDENT
     for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
-    expr       := call | compare | subscript | list_expr | NAME | literal
+    expr       := call | compare | arith | subscript | list_expr | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
     compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=") expr
+    arith      := expr ("+" | "-" | "*" | "/") expr
     subscript  := expr "[" expr "]"
     list_expr  := "[" (expr ("," expr)*)? "]"
     dict_expr  := "{" (expr ":" expr ("," expr ":" expr)*)? "}"
@@ -153,6 +154,17 @@ a bounded compromise, not a complete solution, scoped to the concrete
 cases found by deliberately testing for them: a privileged or sink call
 with no matching-tagged arguments, reachable only through a branch a
 tagged value controlled.
+
+Arithmetic (+, -, *, /) is handled the same way comparisons are: a small
+dict maps AST operator node types to the matching function from the
+`operator` module, and the result's trust and secrecy are the join of
+its two operands, exactly like ast.Compare already computes. A malformed
+operation (dividing by zero, adding a number to a string) is not caught
+or converted into an InterpreterError -- it raises whatever ordinary
+Python exception it would outside this interpreter, the same way a
+whitelisted function called with the wrong argument types already does.
+The whitelist boundary is about what's allowed to run, not about
+catching every mistake a legal operation can still make.
 """
 
 from __future__ import annotations
@@ -172,6 +184,13 @@ _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.LtE: operator.le,
     ast.Gt: operator.gt,
     ast.GtE: operator.ge,
+}
+
+_BINOP_OPS: dict[type, Callable[[Any, Any], Any]] = {
+    ast.Add: operator.add,
+    ast.Sub: operator.sub,
+    ast.Mult: operator.mul,
+    ast.Div: operator.truediv,
 }
 
 
@@ -426,6 +445,15 @@ def eval_node(
         compare_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
         compare_secrecy = Secrecy.SECRET if Secrecy.SECRET in (left_secrecy, right_secrecy) else Secrecy.PUBLIC
         return _COMPARE_OPS[op_type](left, right), compare_trust, compare_secrecy
+    if isinstance(node, ast.BinOp):
+        op_type = type(node.op)
+        if op_type not in _BINOP_OPS:
+            raise InterpreterError(f"unsupported arithmetic operator: {op_type.__name__}")
+        left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
+        right, right_trust, right_secrecy = eval_node(node.right, allowed, env, caps, pc_trust, pc_secrecy)
+        binop_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
+        binop_secrecy = Secrecy.SECRET if Secrecy.SECRET in (left_secrecy, right_secrecy) else Secrecy.PUBLIC
+        return _BINOP_OPS[op_type](left, right), binop_trust, binop_secrecy
     if isinstance(node, ast.List):
         elements = [eval_node(e, allowed, env, caps, pc_trust, pc_secrecy) for e in node.elts]
         list_trust = Trust.UNTRUSTED if any(t == Trust.UNTRUSTED for _, t, _ in elements) else Trust.TRUSTED

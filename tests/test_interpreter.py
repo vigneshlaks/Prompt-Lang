@@ -1600,6 +1600,109 @@ def test_untrusted_value_used_only_in_comparison_is_not_blocked():
     assert calls == ["notified"]
 
 
+# Arithmetic: same shape as the comparison operators above, but computing
+# a value instead of a boolean.
+
+
+def test_addition():
+    assert run("2 + 3", {}) == 5
+
+
+def test_subtraction():
+    assert run("10 - 4", {}) == 6
+
+
+def test_multiplication():
+    assert run("3 * 4", {}) == 12
+
+
+def test_division():
+    assert run("10 / 4", {}) == 2.5
+
+
+def test_arithmetic_on_variables():
+    assert run("x = 2\ny = 3\nx + y", {}) == 5
+
+
+def test_division_by_zero_propagates_as_a_normal_python_exception():
+    # Not caught or converted -- the whitelist boundary is about what's
+    # allowed to run, not about catching every mistake a legal operation
+    # can still make (same stance as a whitelisted call with the wrong
+    # argument types).
+    with pytest.raises(ZeroDivisionError):
+        run("1 / 0", {})
+
+
+def test_unsupported_binop_operator_raises():
+    with pytest.raises(InterpreterError):
+        run("2 ** 3", {})
+
+
+def test_arithmetic_result_is_untrusted_if_either_operand_is_untrusted():
+    def read_secret():
+        return 5
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "approve(1 + read_secret())",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_arithmetic_result_is_secret_if_either_operand_is_secret():
+    def read_api_key_length():
+        return 20
+
+    def send_to_webhook(x):
+        raise AssertionError("must not be called with a secret argument")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "send_to_webhook(1 + read_api_key_length())",
+            {"read_api_key_length": read_api_key_length, "send_to_webhook": send_to_webhook},
+            confidential=frozenset({"read_api_key_length"}),
+            sinks=frozenset({"send_to_webhook"}),
+        )
+
+
+def test_arithmetic_on_two_trusted_values_is_not_blocked():
+    calls = []
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "approve(2 + 3)",
+        {"approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_privileged_call_blocked_behind_an_untrusted_arithmetic_branch_condition():
+    # pc_trust has to pick up BinOp's trust the same way it already picks
+    # up Compare's -- an arithmetic expression used directly as an if
+    # condition is just as capable of implicit flow as a comparison is.
+    def read_secret():
+        return 1
+
+    def approve():
+        raise AssertionError("must not run: reached only via an untrusted condition")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "if 1 + read_secret():\n    approve()",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
 # Over-restriction check (the FIDES comparison from notes/ROADMAP.md): does
 # this system avoid blocking unrelated clean operations just because
 # something untrusted/secret exists elsewhere in the program? Everything

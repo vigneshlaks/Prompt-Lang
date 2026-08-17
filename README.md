@@ -12,10 +12,10 @@ parses a model's output with `ast.parse` and dispatches only through an
 explicit whitelist, never `eval()`. It's ported from `provenance-ac`'s
 `agent_demo/agent_loop.py`, which used the identical pattern for a single
 tool call. It currently supports a toy grammar of function calls,
-assignment, if/else conditionals, while and for loops, and lists (see the
-grammar in `prompt_lang/interpreter.py`'s module docstring); growing it further means
-adding more statement types to `eval_node`/`exec_stmt`, not relaxing the
-whitelist check.
+assignment, if/else conditionals, while and for loops, lists, dicts, and
+arithmetic (see the grammar in `prompt_lang/interpreter.py`'s module
+docstring); growing it further means adding more statement types to
+`eval_node`/`exec_stmt`, not relaxing the whitelist check.
 
 ## What didn't come over from provenance-ac, on purpose
 
@@ -85,6 +85,18 @@ untrusted) was checked against dicts before shipping them, not after —
 same class of gap didn't need to be found a second time. Dicts don't
 support iteration yet (`for k in some_dict`), only literal construction
 and lookup.
+
+Arithmetic (`+`, `-`, `*`, `/`) exists now too, handled the same way as
+comparisons: a small operator table, and a result whose trust and
+secrecy are the join of its two operands — an arithmetic expression
+used directly as an `if`/`while` condition correctly raises `pc_trust`/
+`pc_secrecy` the same way a comparison does, confirmed directly rather
+than assumed. A malformed operation (division by zero, adding a number
+to a string) isn't caught or converted — it raises whatever ordinary
+Python exception it would outside this interpreter, the same stance
+already taken for a whitelisted call given the wrong argument types.
+The whitelist boundary governs what's allowed to run, not every mistake
+a legal operation can still make.
 
 The feasibility question — can an open-weight model reliably generate
 valid syntax for this grammar — has a real answer across three models,
