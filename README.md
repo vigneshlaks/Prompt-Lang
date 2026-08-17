@@ -188,6 +188,20 @@ elements (`_has_untrusted` in `interpreter.py`), not just at a value's
 own outer tag, so a sanitizer can't launder a container's contents by
 clearing only its own top-level label.
 
+Everything above tested one direction — does the system correctly block
+bad cases. A separate pass tested the opposite direction: does it
+over-restrict, blocking things that should be allowed just because
+something untrusted or secret exists elsewhere in the program (the
+failure mode `provenance-ac` checked itself against, named after
+FIDES's session-level tainting). Nine deliberately constructed cases —
+an unused untrusted/secret variable sitting near an unrelated clean
+call, `pc_trust`/`pc_secrecy` not leaking between sibling `if` blocks or
+out of a `while` loop after it ends, nested trusted branches, a loop
+over a trusted list, program order, an unrelated shared-store write —
+all passed on the first attempt. No over-restriction bug found. That's
+a real result, not proof there isn't one anywhere: these nine specific
+cases are confirmed correct, nothing more.
+
 ```bash
 pip install pytest
 pytest tests/ -v

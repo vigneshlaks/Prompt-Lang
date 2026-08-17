@@ -1424,3 +1424,185 @@ def test_untrusted_value_used_only_in_comparison_is_not_blocked():
         privileged=frozenset({"approve"}),
     )
     assert calls == ["notified"]
+
+
+# Over-restriction check (the FIDES comparison from notes/ROADMAP.md): does
+# this system avoid blocking unrelated clean operations just because
+# something untrusted/secret exists elsewhere in the program? Everything
+# tested so far checks the opposite direction -- that bad cases get
+# blocked. These confirm good cases still succeed.
+
+
+def test_unused_untrusted_variable_does_not_block_an_unrelated_privileged_call():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "x = read_secret()\ny = 5\napprove(y)",
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_pc_trust_does_not_leak_from_an_earlier_untrusted_branch_into_a_later_sibling():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "if read_secret() == 'sk-secret':\n"
+        "    y = 1\n"
+        "if 1 == 1:\n"
+        "    approve(5)",
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_pc_trust_does_not_leak_out_of_a_while_loop_after_it_ends():
+    calls = []
+
+    def get_zero():
+        return 0
+
+    def get_secret_bound():
+        return 2
+
+    def bump(x):
+        return x + 1
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "n = get_zero()\n"
+        "while n < get_secret_bound():\n"
+        "    n = bump(n)\n"
+        "approve(5)",
+        {
+            "get_zero": get_zero,
+            "get_secret_bound": get_secret_bound,
+            "bump": bump,
+            "approve": approve,
+        },
+        sources=frozenset({"get_secret_bound"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_nested_trusted_branches_do_not_block_a_privileged_call():
+    calls = []
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "if 1 == 1:\n    if 2 == 2:\n        approve(5)",
+        {"approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_privileged_call_using_only_trusted_data_in_a_loop_over_a_trusted_list_is_allowed():
+    calls = []
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "for x in [1, 2, 3]:\n    approve(x)",
+        {"approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [1, 2, 3]
+
+
+def test_privileged_call_before_an_untrusted_branch_in_program_order_is_unaffected():
+    calls = []
+
+    def read_secret():
+        return "sk-secret"
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "approve(5)\nif read_secret() == 'sk-secret':\n    y = 1",
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_writing_untrusted_data_to_shared_store_does_not_block_unrelated_privileged_calls():
+    store = {}
+
+    def write_shared(key, value):
+        store[key] = value
+
+    calls = []
+
+    def approve(x):
+        calls.append(x)
+
+    run(
+        "write_shared('note', 'attacker text')\napprove(5)",
+        {"write_shared": write_shared, "approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [5]
+
+
+def test_unused_secret_variable_does_not_block_an_unrelated_sink_call():
+    calls = []
+
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        calls.append(x)
+
+    run(
+        "x = read_api_key()\ny = 5\nsend_to_webhook(y)",
+        {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+        confidential=frozenset({"read_api_key"}),
+        sinks=frozenset({"send_to_webhook"}),
+    )
+    assert calls == [5]
+
+
+def test_pc_secrecy_does_not_leak_from_an_earlier_secret_branch_into_a_later_sibling():
+    calls = []
+
+    def read_api_key():
+        return "sk-live-real-key"
+
+    def send_to_webhook(x):
+        calls.append(x)
+
+    run(
+        "if read_api_key() == 'sk-live-real-key':\n"
+        "    y = 1\n"
+        "if 1 == 1:\n"
+        "    send_to_webhook(5)",
+        {"read_api_key": read_api_key, "send_to_webhook": send_to_webhook},
+        confidential=frozenset({"read_api_key"}),
+        sinks=frozenset({"send_to_webhook"}),
+    )
+    assert calls == [5]
