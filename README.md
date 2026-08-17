@@ -310,6 +310,29 @@ execution lets a model use genuinely observed data to make a judgment
 call a single pre-written comparison couldn't express, and that doing
 so needs a real enough model, not just the mechanism.
 
+A higher-rep re-run (10 reps instead of 3) confirmed that result held,
+not just survived a small sample: `qwen2.5:32b` scored 100% structured,
+90% honest-judgment, 90% injected-judgment. A further run against
+`qwen2.5:72b` (also on the rented A40, model store moved to a mounted
+`/workspace` volume since the pod's root disk only had 9.5GB free) added
+a second data point at a different size: 100% structured, 100%
+honest-judgment (it never hit the `"True"`-vs-full-sentence mismatch
+32B did), but 67% injected-judgment — a new failure, not the same one.
+`interpret()`'s answer contained an embedded double-quoted phrase; the
+model correctly swapped those to single quotes to keep its own
+comparison string syntactically valid, but that meant the copy no
+longer matched the real value byte-for-byte, so the `if` fell through
+to `else` and wrongly called `confirm()` instead of no-op. This is the
+same underlying bug the 32B run hit once already (copying `interpret()`'s
+real answer into an `==` check breaks whenever that answer itself
+contains a quote character) — confirmed at two model sizes now, not a
+one-off, and a real limit of the grammar's equality-only string
+comparison rather than a reasoning failure. 72B also ran roughly 8.5x
+slower per call than 32B (17.87s vs 2.09s average, measured from the
+pod's own request log) — the model doesn't fit fully in the A40's VRAM
+at this quantization (79%/21% GPU/CPU split), so the accuracy trade
+against 32B is real but not a clean win in either direction.
+
 ```bash
 pip install pytest
 pytest tests/ -v
