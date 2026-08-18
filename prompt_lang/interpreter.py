@@ -23,7 +23,7 @@ Toy grammar supported so far (informal EBNF):
     expr       := call | compare | arith | boolean | unary | subscript
                   | list_expr | dict_expr | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
-    compare    := expr (("==" | "!=" | "<" | "<=" | ">" | ">=") expr)+
+    compare    := expr (("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in") expr)+
     arith      := expr ("+" | "-" | "*" | "/" | "//" | "%" | "**") expr
     boolean    := expr ("and" | "or") expr
     unary      := ("-" | "+" | "not") expr
@@ -241,6 +241,8 @@ _COMPARE_OPS: dict[type, Callable[[Any, Any], bool]] = {
     ast.LtE: operator.le,
     ast.Gt: operator.gt,
     ast.GtE: operator.ge,
+    ast.In: lambda a, b: _contains(a, b),
+    ast.NotIn: lambda a, b: not _contains(a, b),
 }
 
 _BINOP_OPS: dict[type, Callable[[Any, Any], Any]] = {
@@ -359,6 +361,20 @@ def _is_tagged_dict(value: Any) -> bool:
         isinstance(v, tuple) and len(v) == 3 and isinstance(v[1], Trust) and isinstance(v[2], Secrecy)
         for v in value.values()
     )
+
+
+def _contains(a: Any, b: Any) -> bool:
+    """Implements `a in b` for this interpreter's own value shapes. A
+    tagged list's elements are (value, Trust, Secrecy) triples, not bare
+    values -- Python's own `in` would compare `a` against those triples
+    directly and always come back False, so a list's elements are
+    unwrapped to their raw values first. A tagged dict's keys are already
+    stored raw (only its values are triples, see ast.Dict's handling
+    below), and strings are never wrapped internally at all, so both fall
+    straight through to plain Python `in` unchanged."""
+    if _is_tagged_list(b):
+        return any(a == v for v, _, _ in b)
+    return a in b
 
 
 def _has_untrusted(value: Any, trust: Trust) -> bool:

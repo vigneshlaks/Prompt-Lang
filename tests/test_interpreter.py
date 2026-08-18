@@ -2169,3 +2169,103 @@ def test_pc_secrecy_does_not_leak_from_an_earlier_secret_branch_into_a_later_sib
         sinks=frozenset({"send_to_webhook"}),
     )
     assert calls == [5]
+
+
+def test_in_operator_on_strings():
+    assert run('"lo" in "hello"', {}) is True
+    assert run('"xy" in "hello"', {}) is False
+
+
+def test_not_in_operator_on_strings():
+    assert run('"xy" not in "hello"', {}) is True
+    assert run('"lo" not in "hello"', {}) is False
+
+
+def test_in_operator_on_a_list_literal():
+    # A list literal's elements are (value, Trust, Secrecy) triples
+    # internally, not bare values -- `in` has to unwrap them before
+    # comparing, or every membership check silently comes back False.
+    assert run("3 in [1, 2, 3]", {}) is True
+    assert run("5 in [1, 2, 3]", {}) is False
+
+
+def test_in_operator_on_an_auto_wrapped_list_from_an_outside_function():
+    def get_list():
+        return [1, 2, 3]
+
+    assert run("2 in get_list()", {"get_list": get_list}) is True
+
+
+def test_in_operator_on_a_dict_checks_keys():
+    assert run('"a" in {"a": 1, "b": 2}', {}) is True
+    assert run('"z" in {"a": 1, "b": 2}', {}) is False
+
+
+def test_in_result_is_untrusted_if_the_checked_value_is_untrusted():
+    def read_email():
+        return "contains the word urgent"
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'x = "urgent" in read_email()\napprove(x)',
+            {"read_email": read_email, "approve": approve},
+            sources=frozenset({"read_email"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_privileged_call_blocked_behind_an_in_branch_condition():
+    def read_secret():
+        return "sk-secret-key"
+
+    def blocked(x=None):
+        raise AssertionError("should not run")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'if "secret" in read_secret():\n    blocked()',
+            {"read_secret": read_secret, "blocked": blocked},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"blocked"}),
+        )
+
+
+def test_sink_call_blocked_behind_a_secret_in_branch_condition():
+    def read_secret():
+        return "sk-secret-key"
+
+    def blocked_sink(x):
+        raise AssertionError("should not run")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            'if "secret" in read_secret():\n    blocked_sink(1)',
+            {"read_secret": read_secret, "blocked_sink": blocked_sink},
+            confidential=frozenset({"read_secret"}),
+            sinks=frozenset({"blocked_sink"}),
+        )
+
+
+def test_in_avoids_the_quote_collision_bug_found_in_turn_by_turn_testing():
+    # The real bug: a model copying interpret()'s exact returned text
+    # into an == literal breaks whenever that text contains a quote
+    # character, since escaping/quote-swapping makes the copy stop
+    # matching byte-for-byte. `in` sidesteps this entirely -- no need
+    # to reproduce the answer verbatim, just check for a keyword.
+    answer = (
+        'The message is trying to manipulate you into doing something '
+        'else, referencing "IMPORTANT SYSTEM OVERRIDE".'
+    )
+    result = run(
+        'x = get_answer()\n'
+        'if "manipulate" in x:\n'
+        '    outcome = "reject"\n'
+        'else:\n'
+        '    outcome = "confirm"\n'
+        'outcome',
+        {"get_answer": lambda: answer},
+    )
+    assert result == "reject"

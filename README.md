@@ -333,6 +333,28 @@ pod's own request log) — the model doesn't fit fully in the A40's VRAM
 at this quantization (79%/21% GPU/CPU split), so the accuracy trade
 against 32B is real but not a clean win in either direction.
 
+The quote-collision bug itself is now fixed at the interpreter level:
+`ast.In`/`ast.NotIn` (Python's `in`/`not in`) are supported, so a
+program can check `"billing" in category` instead of requiring an exact
+copy of `interpret()`'s full-sentence answer in an `==` literal. Fixing
+this surfaced a second, previously invisible bug in the process, caught
+live before any test was written rather than assumed away: a list
+literal's elements are `(value, Trust, Secrecy)` triples internally, not
+bare values, so `3 in [1, 2, 3]` silently returned `False` until `in`'s
+implementation (`_contains` in `prompt_lang/interpreter.py`) was made to
+unwrap tagged-list elements first — dict membership needed no such fix,
+since a tagged dict's keys are already stored raw. Both directions
+(propagation through an `in` expression's result, and `pc_trust`/
+`pc_secrecy` gating a privileged or sink call behind an `in` branch
+condition) are covered by tests, the same checklist every prior operator
+addition got. `experiments/turn_by_turn_test.py`'s grammar and few-shot
+example were updated to teach `in` as the preferred way to check
+`interpret()`'s answer. Not yet re-verified live against a real model —
+the rented A40 was shut down after the 72B run, so this fix is confirmed
+correct at the interpreter level (9 new tests, live-checked before they
+were written) but not yet confirmed to actually change model behavior in
+the harness.
+
 ```bash
 pip install pytest
 pytest tests/ -v

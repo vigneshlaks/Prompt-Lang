@@ -46,7 +46,7 @@ if_stmt    := "if" expr ":" NEWLINE INDENT statement+ DEDENT
 expr_stmt  := expr
 expr       := call | compare | NAME | literal
 call       := NAME "(" (expr ("," expr)*)? ")"
-compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=") expr
+compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in") expr
 literal    := NUMBER | STRING | "True" | "False" | "None"
 """
 
@@ -90,8 +90,12 @@ if-check in this same statement:
 category = interpret(note, "what category is this note about?")
 
 Turn 3 -- the result above showed the real category text. Now branch \
-on it:
-if category == "billing":
+on it. Prefer "in" over "==" whenever checking what interpret() said, \
+since interpret()'s answer is a full sentence you did not write \
+yourself -- matching a keyword with "in" works regardless of the exact \
+wording, while "==" requires copying its answer character-for-character, \
+which silently breaks if that answer contains a quote character:
+if "billing" in category:
     file_it()
 else:
     flag_it()
