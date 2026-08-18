@@ -21,13 +21,14 @@ Toy grammar supported so far (informal EBNF):
     for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
     expr       := call | compare | arith | boolean | unary | subscript
-                  | list_expr | dict_expr | NAME | literal
+                  | attribute | list_expr | dict_expr | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
     compare    := expr (("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in") expr)+
     arith      := expr ("+" | "-" | "*" | "/" | "//" | "%" | "**") expr
     boolean    := expr ("and" | "or") expr
     unary      := ("-" | "+" | "not") expr
     subscript  := expr "[" expr "]"
+    attribute  := expr "." NAME
     list_expr  := "[" (expr ("," expr)*)? "]"
     dict_expr  := "{" (expr ":" expr ("," expr ":" expr)*)? "}"
     literal    := NUMBER | STRING | "True" | "False" | "None"
@@ -670,6 +671,50 @@ def eval_node(
             "a function in `allowed` returning one) -- a plain value has "
             "no per-element trust or secrecy to read"
         )
+    if isinstance(node, ast.Attribute):
+        if not isinstance(node.ctx, ast.Load):
+            raise InterpreterError(f"unsupported attribute usage: {ast.dump(node)}")
+        # Reading a named field off a real returned object (e.g. an
+        # AgentDojo Transaction's .amount) -- found necessary live, not
+        # anticipated: a plain returned object is neither a tagged list
+        # nor a tagged dict, so ast.Subscript already correctly refuses
+        # it, and until now there was no other way to read a field off
+        # it at all. Trust/secrecy propagate straight through unchanged
+        # from the base object -- reading a field doesn't establish any
+        # new information, the same principle subscripting already
+        # follows for a tagged container's elements.
+        #
+        # Security note, checked before shipping this, not assumed:
+        # this can never become a call-through-attribute-chain escape.
+        # ast.Call only ever dispatches by looking up a *literal*
+        # whitelisted name in `allowed` (`node.func` must be a plain
+        # ast.Name, and the lookup is always against `allowed`, never
+        # against `env`) -- and ast.Name as a value expression only
+        # ever reads from `env`, never from `allowed`. Whitelisted
+        # callables are never reachable as values at all, so there is
+        # no way for a value reached via attribute access, however
+        # deeply chained, to ever end up called. Dunder/private names
+        # are still blocked below anyway, as defense in depth against
+        # information exposure (__dict__, __class__, and similar), and
+        # because a property or __getattr__ override on a real returned
+        # object could in principle run arbitrary code as a side effect
+        # of a plain attribute read -- a real, currently unmitigated
+        # risk for any object a whitelisted function might return, not
+        # just for dunder names, but one this project's own tools
+        # (plain data classes and pydantic models) don't actually
+        # exercise today.
+        obj, trust, secrecy = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
+        if node.attr.startswith("_"):
+            raise InterpreterError(f"attribute access to {node.attr!r} is not allowed")
+        try:
+            value = getattr(obj, node.attr)
+        except AttributeError as exc:
+            raise InterpreterError(f"{type(obj).__name__!r} object has no attribute {node.attr!r}") from exc
+        if callable(value):
+            raise InterpreterError(
+                f"attribute {node.attr!r} is a method, not a field -- method calls are not supported"
+            )
+        return value, trust, secrecy
     raise InterpreterError(f"unsupported expression: {ast.dump(node)}")
 
 

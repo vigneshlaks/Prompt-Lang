@@ -2300,3 +2300,117 @@ def test_in_avoids_the_quote_collision_bug_found_in_turn_by_turn_testing():
         {"get_answer": lambda: answer},
     )
     assert result == "reject"
+
+
+class _Obj:
+    def __init__(self, amount):
+        self.amount = amount
+
+    def method(self):
+        return "called"
+
+
+def test_attribute_read_returns_the_field_value():
+    def get_obj():
+        return _Obj(42)
+
+    assert run("x = get_obj()\nx.amount", {"get_obj": get_obj}) == 42
+
+
+def test_attribute_read_on_a_missing_field_raises():
+    def get_obj():
+        return _Obj(1)
+
+    with pytest.raises(InterpreterError):
+        run("x = get_obj()\nx.nope", {"get_obj": get_obj})
+
+
+def test_attribute_read_of_a_dunder_name_is_rejected():
+    def get_obj():
+        return _Obj(1)
+
+    with pytest.raises(InterpreterError):
+        run("x = get_obj()\nx.__class__", {"get_obj": get_obj})
+
+
+def test_attribute_read_of_a_method_is_rejected_not_silently_bound():
+    def get_obj():
+        return _Obj(1)
+
+    with pytest.raises(InterpreterError):
+        run("x = get_obj()\nx.method", {"get_obj": get_obj})
+
+
+def test_attribute_access_cannot_be_used_to_reach_and_call_a_whitelisted_name():
+    # The actual security property this feature depends on: ast.Call
+    # only ever dispatches by looking up a literal whitelisted name in
+    # `allowed`, and ast.Name as a value expression only ever reads
+    # `env`, never `allowed` -- so a whitelisted callable is never
+    # reachable as a value at all, and nothing reached via attribute
+    # access, however deeply chained, can ever end up called.
+    def get_str():
+        return "hello"
+
+    with pytest.raises(InterpreterError):
+        run("x = get_str()\ny = x.__class__\ny()", {"get_str": get_str})
+
+
+def test_attribute_read_propagates_untrusted():
+    def read_secret():
+        return _Obj(99)
+
+    def approve(x):
+        raise AssertionError("must not be called with an untrusted argument")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "x = read_secret()\napprove(x.amount)",
+            {"read_secret": read_secret, "approve": approve},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_attribute_read_of_a_trusted_value_is_not_blocked():
+    def get_obj():
+        return _Obj(7)
+
+    calls = []
+    run(
+        "x = get_obj()\napprove(x.amount)",
+        {"get_obj": get_obj, "approve": lambda v: calls.append(v)},
+        privileged=frozenset({"approve"}),
+    )
+    assert calls == [7]
+
+
+def test_privileged_call_blocked_behind_an_attribute_read_branch_condition():
+    def read_secret():
+        return _Obj(99)
+
+    def blocked(x=None):
+        raise AssertionError("should not run")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "x = read_secret()\nif x.amount == 99:\n    blocked()",
+            {"read_secret": read_secret, "blocked": blocked},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"blocked"}),
+        )
+
+
+def test_sink_call_blocked_behind_a_secret_attribute_read_branch_condition():
+    def read_api_key():
+        return _Obj(123)
+
+    def leak(x=None):
+        raise AssertionError("should not run")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            "x = read_api_key()\nif x.amount == 123:\n    leak()",
+            {"read_api_key": read_api_key, "leak": leak},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"leak"}),
+        )
