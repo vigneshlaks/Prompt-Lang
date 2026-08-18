@@ -29,7 +29,7 @@ import requests
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prompt_lang.interpreter import InterpreterError, Session, run_turn
+from prompt_lang.interpreter import InterpreterError, Session, run_turn, unwrap_value
 from prompt_lang.tools import interpret
 
 OLLAMA_URL = "http://localhost:11434/api/generate"
@@ -253,6 +253,18 @@ def _turn_display_result(stmt: str, result: Any, session: Session) -> Any:
     then `interpretation = interpret(message, ...)` never once saw
     real data across either statement, so a later `if interpretation
     == "...":` turn was written entirely blind, on any model size.
+
+    session.env[name][0] is only the outer unwrap -- the same gap
+    unwrap_value() was built to close for external calls and for
+    run()/run_turn()'s own return, found live a second time in a third
+    location via a real AgentDojo attempt: a model assigned a list of
+    Transaction objects to a variable, was shown that list still
+    containing raw (value, Trust, Secrecy) triples in the turn history,
+    and reasonably (but wrongly) concluded every element of a `for`
+    loop over it would need an extra `[0]` to unwrap -- because that is
+    literally the shape it had been shown. Applying unwrap_value() here
+    closes the same class of leak at the one boundary that was still
+    open: what the harness itself displays back to the model.
     """
     try:
         node = ast.parse(stmt).body[0]
@@ -261,7 +273,7 @@ def _turn_display_result(stmt: str, result: Any, session: Session) -> Any:
     if isinstance(node, ast.Assign) and len(node.targets) == 1 and isinstance(node.targets[0], ast.Name):
         name = node.targets[0].id
         if name in session.env:
-            return session.env[name][0]
+            return unwrap_value(session.env[name][0])
     return result
 
 

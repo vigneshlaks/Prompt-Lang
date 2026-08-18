@@ -127,16 +127,30 @@ SUITE_CLASSIFICATIONS: dict[str, dict[str, frozenset[str]]] = {
 }
 
 GRAMMAR = """\
-statement  := assign | if_stmt | expr_stmt
+statement  := assign | if_stmt | for_stmt | expr_stmt
 assign     := NAME "=" expr
 if_stmt    := "if" expr ":" NEWLINE INDENT statement+ DEDENT
               ("else" ":" NEWLINE INDENT statement+ DEDENT)?
+for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
 expr_stmt  := expr
-expr       := call | compare | NAME | literal
+expr       := call | compare | arith | subscript | attribute | NAME | literal
 call       := NAME "(" (kwarg ("," kwarg)*)? ")"
 kwarg      := NAME "=" expr
 compare    := expr ("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in") expr
+arith      := expr ("+" | "-" | "*" | "/") expr
+subscript  := expr "[" expr "]"
+attribute  := expr "." NAME
 literal    := NUMBER | STRING | "True" | "False" | "None"
+
+Note: there are no built-in functions at all beyond what's listed under
+"available functions" below -- no sum(), len(), str(), and no list/
+generator comprehensions or ternary (x if y else z) expressions either.
+To total or filter a collection, use a real for loop with a plain
+variable as a running total, e.g.:
+    total = 0
+    for item in items:
+        if item.amount > 0:
+            total = total + item.amount
 """
 
 FEW_SHOT = """\

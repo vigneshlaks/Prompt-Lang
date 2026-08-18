@@ -378,7 +378,7 @@ def _contains(a: Any, b: Any) -> bool:
     return a in b
 
 
-def _unwrap_value(value: Any) -> Any:
+def unwrap_value(value: Any) -> Any:
     """Recursively strips Trust/Secrecy tags from a tagged list or dict,
     down to plain Python values. Found necessary, not assumed, while
     wiring up real external functions (AgentDojo's real tools) that take
@@ -395,9 +395,9 @@ def _unwrap_value(value: Any) -> Any:
     return -- this closes the gap where it wasn't actually applied for
     list/dict values specifically."""
     if _is_tagged_list(value):
-        return [_unwrap_value(v) for v, _, _ in value]
+        return [unwrap_value(v) for v, _, _ in value]
     if _is_tagged_dict(value):
-        return {k: _unwrap_value(v) for k, (v, _, _) in value.items()}
+        return {k: unwrap_value(v) for k, (v, _, _) in value.items()}
     return value
 
 
@@ -506,8 +506,8 @@ def eval_node(
                 f"sink operation {name!r} called from a branch whose "
                 "condition depended on secret data"
             )
-        args = [_unwrap_value(v) for v, _, _ in arg_results]
-        kwargs = {k: _unwrap_value(v) for k, (v, _, _) in kwarg_results.items()}
+        args = [unwrap_value(v) for v, _, _ in arg_results]
+        kwargs = {k: unwrap_value(v) for k, (v, _, _) in kwarg_results.items()}
         # A real external function only ever sees and returns plain
         # values now, never this interpreter's internal tags -- but if
         # it hands back the exact same list/dict object it was given (a
@@ -837,7 +837,7 @@ def run(
     result = None
     for stmt in tree.body:
         result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, Secrecy.PUBLIC, budget)
-    return _unwrap_value(result[0]) if result is not None else None
+    return unwrap_value(result[0]) if result is not None else None
 
 
 class Session:
@@ -893,4 +893,4 @@ def run_turn(
     result = exec_stmt(
         tree.body[0], allowed, session.env, caps, Trust.TRUSTED, Secrecy.PUBLIC, session.budget
     )
-    return _unwrap_value(result[0]) if result is not None else None
+    return unwrap_value(result[0]) if result is not None else None
