@@ -374,6 +374,27 @@ week, now against real external task data instead of a hand-written
 stub. Not yet run against an actual model, for the same reason as
 above — no GPU currently up.
 
+A property-based fuzzer for the capability system now exists too
+(`tests/test_fuzz.py`), generalizing the hand-written adversarial tests
+(container laundering, the nested-loop budget bug, both implicit-flow
+gaps, the quote-collision bug) into a randomized search instead of one
+person's hand-picked cases. Each generated program carries a ground
+truth — untrusted/secret — tracked by the generator itself as it builds
+the program, independent of anything the interpreter computes, so the
+check isn't tautological. Randomizes chain length through
+ordinary/sanitizer/declassifier hops, container wrap/unwrap, mixing in
+a second untrusted or secret source mid-chain, and whether the final
+privileged/sink call is reached directly or only behind a branch gated
+on the value (via `==` or `in`). Before trusting a clean run, confirmed
+the fuzzer actually has detection power, not just assumed it: temporarily
+disabled the direct-argument privileged check and separately the
+`pc_trust` branch-gating check, watched each produce its own real,
+minimal, distinct failing case, then reverted both. Real result at full
+volume (4000 cases across six seeds): zero counterexamples — evidence
+the mechanism holds under a much larger randomized sample than the
+handful of hand-written adversarial cases covered, not proof of
+soundness, the same caveat every other clean result here gets.
+
 ```bash
 pip install pytest
 pytest tests/ -v
