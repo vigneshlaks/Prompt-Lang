@@ -498,6 +498,33 @@ the mechanism holds under a much larger randomized sample than the
 handful of hand-written adversarial cases covered, not proof of
 soundness, the same caveat every other clean result here gets.
 
+The overhead question (`notes/ROADMAP.md` item 6) — does the grammar
+constraint cost task-completion capability compared to unrestricted
+tool-calling — has a first, honest answer now
+(`experiments/overhead_measurement.py`). Same `qwen2.5:32b`, same five
+banking tasks, two paths: prompt-lang's turn-by-turn adapter against
+AgentDojo's own native `LocalLLM` pipeline (structured tool-calling
+over Ollama's OpenAI-compatible endpoint, no grammar involved), both
+scored by AgentDojo's own `utility()`. Result: 1/5 for each path — no
+usable signal on success rate at this sample size, stated plainly
+rather than stretched into a conclusion. What is clear: native averaged
+2.2 calls and 13.3s per task against prompt-lang's 6.2 calls and 21.4s
+— the direct, expected cost of forcing one statement per model call
+instead of letting a response bundle reasoning and a tool call
+together. The two native failures were genuinely different from each
+other, worth distinguishing rather than lumping into one number: one
+was a parsing casualty, not a reasoning one — the model picked the
+right recipient and amount, then emitted a tool call missing its
+closing tag, wrapped in a stray markdown fence, and AgentDojo's own
+local-model parser silently dropped it; the other was a real shortfall
+— asked the user to specify a refund amount instead of calling
+`get_most_recent_transactions` to find it, directly against its own
+system prompt's instruction to use tools to disambiguate. Worth
+flagging directly: prompt-lang's `ast.parse`-based statement format may
+be more tolerant of exactly the kind of formatting slip that cost
+native its first failure — a real, if single-instance, data point in
+the opposite direction from "the grammar costs capability."
+
 ```bash
 pip install pytest
 pytest tests/ -v
