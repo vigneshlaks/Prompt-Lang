@@ -164,13 +164,31 @@ DONE
 def make_allowed(env: BankingEnvironment, runtime: FunctionsRuntime) -> dict[str, Callable]:
     """Wraps every real AgentDojo tool in the suite as a prompt-lang
     whitelisted function. `runtime.run_function` is AgentDojo's own
-    dispatch entrypoint -- it handles the Depends-injected first
-    argument (the environment) itself, so the wrapper only ever needs
-    to forward the model's own keyword arguments."""
+    dispatch entrypoint -- it only ever accepts a keyword-argument dict,
+    with no concept of positional arguments at all, so the wrapper has
+    to map any positional arguments the model wrote to the tool's real
+    parameter names, in order, before forwarding. Found necessary live,
+    not assumed: a model naturally wrote
+    `get_most_recent_transactions(1)`, which the interpreter itself
+    evaluates and forwards correctly (positional args are a real part
+    of the grammar), but the first version of this wrapper only ever
+    accepted keyword arguments and had nowhere to put a positional one."""
     allowed = {}
-    for name in runtime.functions:
-        def wrapper(*, _name: str = name, **kwargs: Any) -> Any:
-            result, error = runtime.run_function(env, _name, kwargs)
+    for name, f in runtime.functions.items():
+        param_names = list(f.parameters.model_fields.keys())
+
+        def wrapper(*args: Any, _name: str = name, _param_names: list[str] = param_names, **kwargs: Any) -> Any:
+            if len(args) > len(_param_names):
+                raise InterpreterError(
+                    f"{_name} got {len(args)} positional arguments, expected at most {len(_param_names)}"
+                )
+            positional_kwargs = dict(zip(_param_names, args))
+            overlap = set(positional_kwargs) & set(kwargs)
+            if overlap:
+                raise InterpreterError(
+                    f"{_name} got multiple values for argument(s): {', '.join(sorted(overlap))}"
+                )
+            result, error = runtime.run_function(env, _name, {**positional_kwargs, **kwargs})
             if error:
                 raise InterpreterError(f"{_name} failed: {error}")
             return result
