@@ -661,7 +661,14 @@ def test_sanitizing_a_fully_trusted_list_still_works_normally():
         sanitizers=frozenset({"identity_sanitizer"}),
         privileged=frozenset({"approve"}),
     )
-    assert calls == [[(1, Trust.TRUSTED, Secrecy.PUBLIC), (2, Trust.TRUSTED, Secrecy.PUBLIC)]]
+    # approve is a real external function here (standing in for
+    # something like a real privileged tool) -- it must receive real
+    # unwrapped values, [1, 2], not this interpreter's own internal
+    # (value, Trust, Secrecy) triples. The point of this test is still
+    # the over-restriction direction (a fully trusted list must not be
+    # blocked), unaffected by what shape the value takes once it's not
+    # blocked.
+    assert calls == [[1, 2]]
 
 
 # Adversarial: untrusted data can decide which branch runs without ever
@@ -774,18 +781,42 @@ def test_nested_loops_cannot_multiply_past_the_total_iteration_budget():
         )
 
 
-def test_list_literal_evaluates_to_a_list_of_tagged_elements():
-    result = run("[1, 2, 3]", {})
-    assert result == [
-        (1, Trust.TRUSTED, Secrecy.PUBLIC),
-        (2, Trust.TRUSTED, Secrecy.PUBLIC),
-        (3, Trust.TRUSTED, Secrecy.PUBLIC),
-    ]
+def test_list_literal_returned_from_run_is_unwrapped_to_plain_values():
+    # eval_node's own internal representation of a list is still a list
+    # of (value, Trust, Secrecy) triples -- unchanged, and still what
+    # list-of-tests below exercise indirectly. What changed: run() is a
+    # real external boundary, documented ("the Trust and Secrecy tags
+    # are unwrapped here, not exposed to callers") to hand back plain
+    # values, the same as it always did for a bare scalar -- this was
+    # never actually true for a list/dict result until now. Found live
+    # while wiring real external functions (AgentDojo's real tools) that
+    # take list arguments: a caller receiving prompt-lang's own internal
+    # tags instead of real values is exactly the same class of leak as
+    # passing them to a whitelisted function's own arguments (see
+    # test_ordinary_function_receives_real_unwrapped_list_values below).
+    assert run("[1, 2, 3]", {}) == [1, 2, 3]
 
 
-def test_dict_literal_evaluates_to_a_tagged_dict():
-    result = run('{"a": 1, "b": 2}', {})
-    assert result == {"a": (1, Trust.TRUSTED, Secrecy.PUBLIC), "b": (2, Trust.TRUSTED, Secrecy.PUBLIC)}
+def test_dict_literal_returned_from_run_is_unwrapped_to_plain_values():
+    assert run('{"a": 1, "b": 2}', {}) == {"a": 1, "b": 2}
+
+
+def test_ordinary_function_receives_real_unwrapped_list_values():
+    # A real external function (this stub stands in for something like
+    # a real AgentDojo tool taking `restaurant_names: list[str]`) must
+    # receive actual Python values, not this interpreter's own internal
+    # (value, Trust, Secrecy) triples -- discovered live wiring up real
+    # AgentDojo tools that take list arguments, where a pydantic
+    # ValidationError on every element was the first sign something was
+    # leaking internal bookkeeping across the call boundary.
+    received = []
+
+    def inspect(items):
+        received.append(items)
+        return items
+
+    run('inspect(["a", "b", "c"])', {"inspect": inspect})
+    assert received == [["a", "b", "c"]]
 
 
 def test_dict_subscript_reads_a_value_by_key():

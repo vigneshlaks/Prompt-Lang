@@ -377,6 +377,29 @@ def _contains(a: Any, b: Any) -> bool:
     return a in b
 
 
+def _unwrap_value(value: Any) -> Any:
+    """Recursively strips Trust/Secrecy tags from a tagged list or dict,
+    down to plain Python values. Found necessary, not assumed, while
+    wiring up real external functions (AgentDojo's real tools) that take
+    list arguments (e.g. `restaurant_names: list[str]`): a list literal
+    passed as a call argument was being handed to the callee with its
+    elements still as raw (value, Trust, Secrecy) triples, since the
+    ast.Call case only ever unwrapped the outermost triple, not what a
+    list/dict value nested inside it. The same bug existed at run()'s and
+    run_turn()'s own top-level return -- both promise an unwrapped value
+    to the caller but only unwrapped one layer. Calling an external
+    function, and returning a value out of run()/run_turn(), are both
+    real boundaries where the interpreter's internal bookkeeping must
+    never leak past, the same principle already applied to run()'s
+    return -- this closes the gap where it wasn't actually applied for
+    list/dict values specifically."""
+    if _is_tagged_list(value):
+        return [_unwrap_value(v) for v, _, _ in value]
+    if _is_tagged_dict(value):
+        return {k: _unwrap_value(v) for k, (v, _, _) in value.items()}
+    return value
+
+
 def _has_untrusted(value: Any, trust: Trust) -> bool:
     """True if trust itself is UNTRUSTED, or value is a tagged list or
     dict containing an untrusted element anywhere, recursively. A
@@ -482,9 +505,35 @@ def eval_node(
                 f"sink operation {name!r} called from a branch whose "
                 "condition depended on secret data"
             )
-        args = [v for v, _, _ in arg_results]
-        kwargs = {k: v for k, (v, _, _) in kwarg_results.items()}
+        args = [_unwrap_value(v) for v, _, _ in arg_results]
+        kwargs = {k: _unwrap_value(v) for k, (v, _, _) in kwarg_results.items()}
+        # A real external function only ever sees and returns plain
+        # values now, never this interpreter's internal tags -- but if
+        # it hands back the exact same list/dict object it was given (a
+        # passthrough, e.g. `def identity_sanitizer(x): return x`), the
+        # original per-element tags are restored below rather than
+        # falling through to auto-wrap, which would uniformly relabel
+        # every nested element with the call's own outer trust and
+        # silently launder whatever was actually still untrusted/secret
+        # inside it -- the exact container-laundering shape already
+        # found and fixed once, reachable again through a different
+        # path (a real external function merely passing a container
+        # through unchanged) once callees stopped seeing internal tags.
+        # Detected by object identity, scoped to this one call only, not
+        # a persistent tracking scheme -- so it doesn't share
+        # provenance-ac's fragility against re-serialization. Narrow by
+        # design: a function that mutates the container in place instead
+        # of returning it untouched isn't covered, the same "opt out by
+        # returning already-tagged pairs yourself" escape hatch other
+        # imprecise auto-wrap cases already document applies here too.
+        passthrough = {
+            id(v): orig
+            for v, orig in list(zip(args, arg_results)) + [(kwargs[k], kwarg_results[k]) for k in kwargs]
+            if _is_tagged_list(orig[0]) or _is_tagged_dict(orig[0])
+        }
         result = allowed[name](*args, **kwargs)
+        if id(result) in passthrough:
+            result = passthrough[id(result)][0]
         if name in caps.sources:
             result_trust = Trust.UNTRUSTED
         elif name in caps.sanitizers:
@@ -743,7 +792,7 @@ def run(
     result = None
     for stmt in tree.body:
         result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, Secrecy.PUBLIC, budget)
-    return result[0] if result is not None else None
+    return _unwrap_value(result[0]) if result is not None else None
 
 
 class Session:
@@ -799,4 +848,4 @@ def run_turn(
     result = exec_stmt(
         tree.body[0], allowed, session.env, caps, Trust.TRUSTED, Secrecy.PUBLIC, session.budget
     )
-    return result[0] if result is not None else None
+    return _unwrap_value(result[0]) if result is not None else None
