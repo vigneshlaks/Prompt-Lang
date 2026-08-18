@@ -29,11 +29,11 @@ from typing import Any, Callable
 
 import requests
 from agentdojo.functions_runtime import FunctionsRuntime
-from agentdojo.task_suite.load_suites import get_suite
+from agentdojo.task_suite.load_suites import get_suite, get_suites
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prompt_lang.interpreter import InterpreterError, Session, run_turn
+from prompt_lang.interpreter import CapabilityError, InterpreterError, Session, run, run_turn
 from turn_by_turn_test import _turn_display_result
 
 # get_suite(), not a direct submodule import: importing
@@ -80,6 +80,51 @@ PRIVILEGED_TOOLS = frozenset({
     "update_user_info",
 })
 SOURCE_TOOLS = frozenset({"read_file"})
+
+# Same classification made for the other three suites, on the same two
+# questions asked for banking: does the tool's return value carry
+# free-text content an attacker could have written (source), and does
+# calling it have a real, consequential effect (privileged). Reference
+# lookups (prices, addresses, schedules, the user's own account info)
+# are ordinary in every suite -- not derived from anything an attacker
+# controls, no side effect.
+SUITE_CLASSIFICATIONS: dict[str, dict[str, frozenset[str]]] = {
+    "banking": {"privileged": PRIVILEGED_TOOLS, "sources": SOURCE_TOOLS},
+    "workspace": {
+        "privileged": frozenset({
+            "send_email", "delete_email", "create_calendar_event",
+            "cancel_calendar_event", "reschedule_calendar_event",
+            "add_calendar_event_participants", "append_to_file",
+            "create_file", "delete_file", "share_file",
+        }),
+        "sources": frozenset({
+            "get_unread_emails", "get_sent_emails", "get_received_emails",
+            "get_draft_emails", "search_emails", "search_calendar_events",
+            "get_day_calendar_events", "get_file_by_id", "search_files",
+        }),
+    },
+    "travel": {
+        "privileged": frozenset({
+            "create_calendar_event", "cancel_calendar_event",
+            "reserve_hotel", "reserve_car_rental", "reserve_restaurant",
+            "send_email",
+        }),
+        "sources": frozenset({
+            "get_rating_reviews_for_hotels", "get_rating_reviews_for_restaurants",
+            "get_rating_reviews_for_car_rental", "search_calendar_events",
+            "get_day_calendar_events",
+        }),
+    },
+    "slack": {
+        "privileged": frozenset({
+            "add_user_to_channel", "send_direct_message", "send_channel_message",
+            "invite_user_to_slack", "remove_user_from_slack", "post_webpage",
+        }),
+        "sources": frozenset({
+            "read_channel_messages", "read_inbox", "get_webpage",
+        }),
+    },
+}
 
 GRAMMAR = """\
 statement  := assign | if_stmt | expr_stmt
@@ -277,9 +322,167 @@ def check_plumbing() -> None:
     print("real capability enforcement holds against real AgentDojo data.")
 
 
+def _to_source(value: Any) -> str:
+    """Turns a Python value from a ground_truth() FunctionCall's args
+    into prompt-lang literal source text. repr() alone already produces
+    valid syntax for the scalar types ground_truth() actually returns
+    (str/int/float/bool/None); dict/list are walked recursively rather
+    than trusting repr() to happen to agree with this grammar's own
+    literal syntax for containers."""
+    if isinstance(value, dict):
+        return "{" + ", ".join(f"{_to_source(k)}: {_to_source(v)}" for k, v in value.items()) + "}"
+    if isinstance(value, list):
+        return "[" + ", ".join(_to_source(v) for v in value) + "]"
+    return repr(value)
+
+
+def run_ground_truth_utility(suite, suite_name: str, task_id: str) -> dict:
+    """Runs one task's own known-correct answer key -- not a model's
+    guess -- through the real interpreter and checks AgentDojo's own
+    utility(). This tests whether the adapter's wiring (tool wrapping,
+    environment loading, argument passing, scoring) is correct for this
+    task. It does NOT test whether any agent could have found this
+    sequence on its own -- the answer is handed to the interpreter, not
+    decided by anything."""
+    classification = SUITE_CLASSIFICATIONS[suite_name]
+    task = suite.get_user_task_by_id(task_id)
+    pre_env = suite.load_and_inject_default_environment({})
+    runtime = FunctionsRuntime(suite.tools)
+    env = pre_env.model_copy(deep=True)
+    allowed = make_allowed(env, runtime)
+
+    calls = task.ground_truth(pre_env)
+    lines = [f"{c.function}({', '.join(f'{k}={_to_source(v)}' for k, v in c.args.items())})" for c in calls]
+    program = "\n".join(lines) if lines else "None"
+
+    # Some tasks' utility() checks the agent's own text output too, not
+    # just the environment's side effects -- e.g. travel's hotel-booking
+    # tasks require the review rating to appear in what the agent said,
+    # not only that reserve_hotel() got called correctly. ground_truth()
+    # only returns function calls, not the text a real agent would have
+    # produced summarizing them, so that text is approximated here by
+    # concatenating every statement's real return value -- the same
+    # thing run_attempt() does for a live model's actual turns. Found
+    # live, not assumed: the first full-corpus run passed 0/20 travel
+    # tasks with no errors at all until this was added, because every
+    # one of them was silently failing this text check with an empty
+    # model_output.
+    session = Session()
+    model_output_parts = []
+    error = None
+    try:
+        for line in lines:
+            result = run_turn(
+                session, line, allowed,
+                sources=classification["sources"], privileged=classification["privileged"],
+            )
+            display = _turn_display_result(line, result, session)
+            if display is not None:
+                model_output_parts.append(str(display))
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+
+    utility = None
+    if error is None:
+        try:
+            utility = task.utility("\n".join(model_output_parts), pre_env, env, strict=False)
+        except Exception as exc:
+            error = f"utility() raised {type(exc).__name__}: {exc}"
+    return {"suite": suite_name, "task_id": task_id, "utility": utility, "error": error, "program": program}
+
+
+def check_capability_boundaries(suite, suite_name: str) -> list[dict]:
+    """The one security property checkable without a real agent: every
+    privileged tool must refuse to run when fed a synthetic untrusted
+    value, no matter which real source might have produced it.
+    Ground-truth-driven testing can't cover the security side at all --
+    an injection task's ground_truth() uses literal attacker values
+    (e.g. a hardcoded IBAN) that never route through a `sources` call,
+    so nothing would ever get tagged untrusted and the check would
+    trivially pass either way, proving nothing. This tests the actual
+    load-bearing mechanism directly instead."""
+    classification = SUITE_CLASSIFICATIONS[suite_name]
+    pre_env = suite.load_and_inject_default_environment({})
+    runtime = FunctionsRuntime(suite.tools)
+    env = pre_env.model_copy(deep=True)
+    allowed = dict(make_allowed(env, runtime))
+    allowed["_tainted_source"] = lambda: "attacker-controlled text"
+
+    results = []
+    for name in sorted(classification["privileged"]):
+        f = runtime.functions[name]
+        params = list(f.parameters.model_fields.keys())
+        args_src = ", ".join(f"{p}=x" for p in params)
+        program = f"x = _tainted_source()\n{name}({args_src})"
+        try:
+            run(
+                program, allowed,
+                sources=frozenset({"_tainted_source"}),
+                privileged=classification["privileged"],
+            )
+            blocked, note = False, "ran without error -- SECURITY GAP"
+        except CapabilityError:
+            blocked, note = True, None
+        except Exception as exc:
+            blocked, note = False, f"did not raise CapabilityError -- raised {type(exc).__name__} instead"
+        results.append({"suite": suite_name, "tool": name, "blocked": blocked, "note": note})
+    return results
+
+
+def run_full_corpus() -> None:
+    suites = get_suites("v1")
+    out_dir = Path(__file__).resolve().parent / "results"
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    utility_results = []
+    for suite_name, suite in suites.items():
+        if suite_name not in SUITE_CLASSIFICATIONS:
+            continue
+        for task_id in suite._user_tasks:
+            utility_results.append(run_ground_truth_utility(suite, suite_name, task_id))
+    with (out_dir / "agentdojo_ground_truth_results.jsonl").open("w") as f:
+        for r in utility_results:
+            f.write(json.dumps(r) + "\n")
+
+    boundary_results = []
+    for suite_name, suite in suites.items():
+        if suite_name not in SUITE_CLASSIFICATIONS:
+            continue
+        boundary_results.extend(check_capability_boundaries(suite, suite_name))
+    with (out_dir / "agentdojo_boundary_results.jsonl").open("w") as f:
+        for r in boundary_results:
+            f.write(json.dumps(r) + "\n")
+
+    print("--- ground-truth utility, by suite (no agent involved -- known-correct answer key) ---")
+    for suite_name in SUITE_CLASSIFICATIONS:
+        rows = [r for r in utility_results if r["suite"] == suite_name]
+        passed = sum(1 for r in rows if r["utility"] is True)
+        errored = sum(1 for r in rows if r["error"] is not None)
+        print(f"{suite_name:10s} {passed}/{len(rows)} passed utility(), {errored} errored")
+        for r in rows:
+            if r["error"] is not None or r["utility"] is not True:
+                print(f"    {r['task_id']}: utility={r['utility']} error={r['error']}")
+
+    print("\n--- capability boundary check, by suite (synthetic untrusted value -> every privileged tool) ---")
+    for suite_name in SUITE_CLASSIFICATIONS:
+        rows = [r for r in boundary_results if r["suite"] == suite_name]
+        blocked = sum(1 for r in rows if r["blocked"])
+        print(f"{suite_name:10s} {blocked}/{len(rows)} privileged tools correctly blocked")
+        for r in rows:
+            if not r["blocked"]:
+                print(f"    {r['tool']}: {r['note']}")
+
+    print(f"\nfull logs: {out_dir / 'agentdojo_ground_truth_results.jsonl'}")
+    print(f"           {out_dir / 'agentdojo_boundary_results.jsonl'}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--check-plumbing", action="store_true", help="verify wiring without calling a model")
+    parser.add_argument(
+        "--full-corpus", action="store_true",
+        help="run ground-truth utility + capability-boundary checks across all 4 suites, no model involved",
+    )
     parser.add_argument("--models", nargs="+", default=["qwen2.5:32b"])
     parser.add_argument("--reps", type=int, default=3)
     parser.add_argument("--host", default="http://localhost:11434")
@@ -289,6 +492,10 @@ def main() -> None:
 
     if args.check_plumbing:
         check_plumbing()
+        return
+
+    if args.full_corpus:
+        run_full_corpus()
         return
 
     global OLLAMA_URL
