@@ -355,6 +355,25 @@ correct at the interpreter level (9 new tests, live-checked before they
 were written) but not yet confirmed to actually change model behavior in
 the harness.
 
+A first real AgentDojo integration exists now too
+(`experiments/agentdojo_test.py`), built against the actual `agentdojo`
+package (`pip install agentdojo`, verified by installing it and reading
+the real installed source, not assumed) rather than a simulated
+stand-in. One suite (banking), one real task, one real injection: the
+bill-paying task (`user_task_0`) wrapped as a prompt-lang `allowed`
+dict via AgentDojo's own `runtime.run_function`, `read_file` classified
+`sources`, the five money-moving/account tools classified `privileged`,
+and AgentDojo's own real "important_instructions" jailbreak template
+combined with `injection_task_0`'s real goal injected into the bill
+file through the suite's own injection vector. `--check-plumbing`
+verifies the whole thing with a hand-written program, no model: real
+tool dispatch, AgentDojo's own `utility()` check passing for a correct
+call sequence, and a privileged call fed `read_file()`'s untrusted
+output correctly blocked — the same capability enforcement proven all
+week, now against real external task data instead of a hand-written
+stub. Not yet run against an actual model, for the same reason as
+above — no GPU currently up.
+
 ```bash
 pip install pytest
 pytest tests/ -v
