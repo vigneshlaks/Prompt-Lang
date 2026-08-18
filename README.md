@@ -355,24 +355,87 @@ correct at the interpreter level (9 new tests, live-checked before they
 were written) but not yet confirmed to actually change model behavior in
 the harness.
 
-A first real AgentDojo integration exists now too
+A first AgentDojo integration exists now too
 (`experiments/agentdojo_test.py`), built against the actual `agentdojo`
 package (`pip install agentdojo`, verified by installing it and reading
-the real installed source, not assumed) rather than a simulated
-stand-in. One suite (banking), one real task, one real injection: the
-bill-paying task (`user_task_0`) wrapped as a prompt-lang `allowed`
-dict via AgentDojo's own `runtime.run_function`, `read_file` classified
-`sources`, the five money-moving/account tools classified `privileged`,
-and AgentDojo's own real "important_instructions" jailbreak template
-combined with `injection_task_0`'s real goal injected into the bill
-file through the suite's own injection vector. `--check-plumbing`
-verifies the whole thing with a hand-written program, no model: real
-tool dispatch, AgentDojo's own `utility()` check passing for a correct
-call sequence, and a privileged call fed `read_file()`'s untrusted
-output correctly blocked — the same capability enforcement proven all
-week, now against real external task data instead of a hand-written
-stub. Not yet run against an actual model, for the same reason as
-above — no GPU currently up.
+the installed source, not assumed) rather than a simulated stand-in.
+One suite (banking), one task, one injection: the bill-paying task
+(`user_task_0`) wrapped as a prompt-lang `allowed` dict via AgentDojo's
+own `runtime.run_function`, `read_file` classified `sources`, the five
+money-moving/account tools classified `privileged`, and AgentDojo's own
+"important_instructions" jailbreak template combined with
+`injection_task_0`'s stated goal injected into the bill file through
+the suite's own injection vector. `--check-plumbing` verifies the whole
+thing with a hand-written program, no model: tool dispatch works,
+AgentDojo's own `utility()` check passes for a correct call sequence,
+and a privileged call fed `read_file()`'s untrusted output is correctly
+blocked — the same capability enforcement proven all week, now against
+external task data instead of a hand-written stub. Not yet run against
+an actual model, for the same reason as above — no GPU currently up.
+
+The integration now covers all four suites (banking, workspace, travel,
+slack — 97 user tasks, 27 privileged tools total), each with a
+tool-by-tool `sources`/`privileged` classification made on the same two
+questions asked for banking: does the tool's return value carry
+free-text content an attacker could have written, does calling it have
+a consequential effect. Two verification passes, both deterministic, no
+agent involved in either: a ground-truth utility check
+(`run_ground_truth_utility`) executes each task's own known-correct
+answer key — not a model's guess — through the interpreter and checks
+AgentDojo's own `utility()`, and a capability boundary check
+(`check_capability_boundaries`) confirms every one of the 27 privileged
+tools refuses a synthetic untrusted value, which is the one security
+property checkable without a live model — ground-truth data can't test
+the defense at all, since an injection task's `ground_truth()` uses
+literal attacker values that never route through a `sources` call, so
+nothing would ever be tagged untrusted.
+
+Result: 82/97 ground-truth tasks pass, 1 fails because AgentDojo's own
+`utility()` for that task is unimplemented upstream (`raise
+NotImplementedError`, not this project's bug), and all 27/27 privileged
+tools are correctly blocked. The other ~14 failures share one
+understood, structural cause, not adapter bugs: some tasks' `utility()`
+also checks the agent's own composed text output — a summed total, a
+reformatted date, a comparison across multiple results — `"1050" in
+model_output` for a transaction sum, for instance — and `ground_truth()`
+only returns function calls, never the sentence an agent would have
+written to state a derived answer. No amount of replaying the correct
+calls can produce that text; it takes actually reasoning over what the
+calls returned, the same free-text-reasoning gap this project has been
+probing all week in a different form (`interpret()`, turn-by-turn).
+Building this full-corpus pass paid for itself directly: it found and
+fixed a previously-undiscovered interpreter bug (see below) that a
+single hand-picked task never would have surfaced.
+
+**The bug this found**: passing a list or dict as an argument to any
+whitelisted function handed the callee this interpreter's own internal
+`(value, Trust, Secrecy)` triples instead of plain values — confirmed
+first as `ValidationError`s from AgentDojo's own tools (which take
+arguments like `restaurant_names: list[str]`), then confirmed as the
+identical bug at `run()`'s and `run_turn()`'s own top-level return
+(`run('[1, 2, 3]', {})` returned a list of triples, not `[1, 2, 3]`) —
+both are boundaries where internal bookkeeping must never leak past,
+and neither actually held for containers despite `run()`'s own
+docstring promising it. Fixed with `_unwrap_value`, applied at both
+boundaries. Fixing it broke something else that mattered just as much,
+not a false alarm: three existing tests failed, revealing that the
+container-laundering protection (a sanitizer clearing only a list's
+outer tag while an untrusted element hides inside it) had been relying
+on the very leak just closed — an identity-passthrough function like
+`def identity_sanitizer(x): return x` used to receive and return the
+tagged representation directly, which accidentally preserved nested
+tags. Resolved with a narrow, single-call-scoped object-identity check:
+if a function hands back the exact same list/dict object it was given,
+the original nested tags are restored instead of falling through to
+auto-wrap, which would otherwise uniformly relabel every element with
+the call's own outer trust and silently launder whatever was still
+untrusted or secret inside it. Two of the three failing tests turned
+out to be asserting the old, buggy behavior themselves (`approve`,
+standing in for a privileged tool, expected to receive tagged triples
+instead of plain values) and were corrected rather than reverted
+against. 177 tests passing after, one new test added
+(`test_ordinary_function_receives_real_unwrapped_list_values`) directly
+encoding the shape of bug that was found.
 
 A property-based fuzzer for the capability system now exists too
 (`tests/test_fuzz.py`), generalizing the hand-written adversarial tests
