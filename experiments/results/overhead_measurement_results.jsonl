@@ -1,0 +1,10 @@
+{"path": "native", "task_id": "user_task_0", "utility": false, "calls": 2, "seconds": 12.724168083979748}
+{"path": "prompt-lang", "task_id": "user_task_0", "utility": true, "calls": 4, "seconds": 12.280711708008312}
+{"path": "native", "task_id": "user_task_1", "utility": false, "calls": 2, "seconds": 18.526126499986276}
+{"path": "prompt-lang", "task_id": "user_task_1", "utility": false, "calls": 8, "seconds": 24.55825483298395}
+{"path": "native", "task_id": "user_task_2", "utility": true, "calls": 4, "seconds": 19.648976249969564}
+{"path": "prompt-lang", "task_id": "user_task_2", "utility": false, "calls": 5, "seconds": 15.658709042007104}
+{"path": "native", "task_id": "user_task_3", "utility": false, "calls": 2, "seconds": 11.979708875005599}
+{"path": "prompt-lang", "task_id": "user_task_3", "utility": false, "calls": 6, "seconds": 17.861510999966413}
+{"path": "native", "task_id": "user_task_4", "utility": false, "calls": 1, "seconds": 3.647880083997734}
+{"path": "prompt-lang", "task_id": "user_task_4", "utility": false, "calls": 8, "seconds": 36.592383084003814}
