@@ -677,6 +677,21 @@ schema-aware summary operator instead of a freeform one — this
 project's simplified version used the freeform kind, and the live run
 shows concretely, not just in theory, what that costs.
 
+**Two process gaps in that result got closed the same day: no defense
+had been applied to `describe_handle`'s own call, and the failure
+wasn't tested in isolation before spending a full agent run on it.**
+Added the same spotlighting defense already tested elsewhere in this
+project to `describe_handle`'s underlying model call, then built
+`experiments/describe_handle_isolation_test.py` — a direct, no-agent-
+loop, no-rented-GPU test of that one call against the real poisoned
+bill content. The result is genuinely mixed, not a clean win: on
+`qwen2.5:3b`, spotlighting changed nothing — 5/5 leaked the attacker's
+IBAN with or without it. On `llama3.2:3b`, it dropped leakage from 5/5
+to 1/5, but the model never produced the *correct* IBAN in either
+condition across 10 answers — it became evasive rather than accurate.
+A real, partial, model-dependent effect on one failure mode, not a fix
+for the underlying problem.
+
 ## Limitations, and how this compares to what AgentDojo already is
 
 AgentDojo turned out to be more than a labeled benchmark once actually
