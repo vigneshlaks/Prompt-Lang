@@ -564,6 +564,80 @@ in this environment, so those two are built to the real SDKs'
 documented interfaces and checked to fail cleanly without credentials,
 not verified against a live response.
 
+**A production-layer mitigation for the literal-retyping gap now has
+real code and a live test harness, not just a proposal.**
+`prompt_lang/defenses.py`'s `RetypingGuard` records text returned by
+`sources`/`confidential` calls during a run and flags a string literal
+argument to a `privileged`/`sinks` call that overlaps it — deliberately
+kept outside `interpreter.py`, since it's a runtime pattern-matching
+heuristic, not a data-flow guarantee. `run_turn_guarded` turns that
+from an observe-only layer into an actual block, raising instead of
+executing when something's flagged. An AST rewrite (replace the
+retyped literal with a reference to the variable holding the real
+value, then let the trust system evaluate the corrected code on its
+own) was considered first, instead of blocking — it doesn't work for
+the actual documented case, since the tainted variable holds the whole
+source text (e.g. a full bill) and the retyped literal is only a
+substring of it, not equal to the variable's value; there's no whole-
+variable reference to substitute in, and this grammar has no string
+slicing to construct the correct one. 19 deterministic tests cover the
+guard and the enforcement wrapper, including a regression test
+reproducing the exact documented statement shape. Not yet live-tested
+against a real model successfully: a local re-run against `qwen2.5:3b`
+(the only models available without spinning up the larger host that
+originally found the bug) failed for entirely different, more basic
+reasons before ever reaching the code path the mitigation touches —
+one path never produced a parseable tool call, the other got stuck
+repeating an invalid pandas-style `.sum()` call eight times. A real
+confound, not a confirmation either way.
+
+**Found and fixed, while diagnosing the low overhead-measurement
+utility numbers, not assumed: `model_output` was silently dropping
+every turn that resolved to a number.** `experiments/overhead_measurement.py`,
+`experiments/agentdojo_test.py`, and `experiments/retyping_guard_live_test.py`
+all built the text handed to AgentDojo's `utility()` check with
+`if isinstance(display, str): model_output += display + "\n"` — so a
+turn like `total_spending = total_spending + transaction.amount`
+(a float, never a string) never contributed anything, even when the
+computation was completely correct. A task whose correct answer is a
+number could never pass `utility()` on the prompt-lang path, regardless
+of whether the agent got the math right. Read the actual failing
+transcript (`user_task_1`, the March-2022 spending total) before
+concluding this, not just suspecting it: the model correctly filtered
+and summed the right transactions, then the transcript simply ended —
+the real answer was sitting in a variable that never reached the text
+check. Fixed in all three files (`if display is not None: model_output
++= str(display) + "\n"`). Not yet confirmed to flip a real outcome —
+see the guard paragraph above for why the local re-test couldn't test
+it either.
+
+**A background research pass surveyed the published literature for
+prior art on this exact problem, since re-deriving something already
+known to work (or already shown not to) wastes the days ahead.**
+Headline finding: **SecureClaw** (arXiv:2606.09549) and **GAAP**
+(arXiv:2604.19657), both 2026, already do close to what's being
+proposed here — a single LLM runtime (not a dual-LLM split) where
+sensitive values are replaced with opaque handles at the point they're
+read, and a trusted executor resolves and authorizes the real value
+only at the point of use, never trusting whether the generated code
+textually referenced a tainted variable. SecureClaw is benchmarked
+directly on AgentDojo: 0.64% attack success rate. This is the closest
+real prior art to the "keep one model, stop the literal from mattering"
+goal, and worth reading closely before building further rather than
+after. Separately, **ARGUS** (arXiv:2605.03378) publishes a causal-
+provenance auditor that checks whether an argument's value is grounded
+in legitimate context before allowing an action — close to the "forced
+self-report before a privileged call" idea floated earlier, and
+already benchmarked (28.8% to 3.8% attack success rate). Two of the
+ideas on the table going in — a compiler-level literal-to-variable
+rewrite, and banning literals outright once any untrusted source has
+been read in a session — turned up nothing in the literature either
+way, for or against; genuinely open, not reinvented and not
+discredited. Full findings, confidence-graded per question, are in this
+session's record; the practical takeaway is that SecureClaw's actual
+mechanism deserves direct study before deciding what to build next,
+since it may already be most of the answer.
+
 ## Limitations, and how this compares to what AgentDojo already is
 
 AgentDojo turned out to be more than a labeled benchmark once actually
@@ -599,10 +673,12 @@ genuine, current limitation, not a hidden strength:
   with its own argument parser, rather than one coherent tool the way
   `agentdojo/scripts/benchmark.py` is.
 - **Narrower by design, not by oversight, on the language side.** No
-  function definitions, no exception handling, no attribute access on
-  returned objects (found live this session — `Transaction.amount`
-  fails outright, since the grammar has no `.field` syntax at all),
-  no built-in functions beyond whatever a task explicitly whitelists.
+  function definitions, no exception handling, no dict iteration, no
+  string slicing/indexing, no built-in functions beyond whatever a
+  task explicitly whitelists. Attribute access (`transaction.amount`)
+  was added since this was first written, once it was verified there's
+  no path from an attribute read back to a callable whitelisted name —
+  the remaining gaps above are the ones still real.
   This is the one piece of narrowness that's actually load-bearing for
   the security claim, not a gap to close — see the README's own
   argument for why growing this deliberately trades away the property

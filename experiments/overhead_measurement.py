@@ -85,6 +85,33 @@ class _CountingLocalLLM(LocalLLM):
         return super().query(*args, **kwargs)
 
 
+def _messages_to_transcript(messages) -> list[dict]:
+    """Reduces AgentDojo's ChatMessage objects to plain, JSON-serializable
+    dicts for logging -- role, text content, and any tool call made or
+    reported, which is exactly what's needed to read back why a native
+    attempt succeeded or failed after the fact."""
+    out = []
+    for m in messages:
+        role = m.get("role")
+        content = m.get("content")
+        text = ""
+        if isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and "content" in block:
+                    text += str(block["content"])
+        elif content is not None:
+            text = str(content)
+        entry: dict[str, Any] = {"role": role, "content": text}
+        if m.get("tool_calls"):
+            entry["tool_calls"] = [
+                {"function": tc.function, "args": tc.args} for tc in m["tool_calls"]
+            ]
+        if role == "tool" and m.get("error"):
+            entry["error"] = m["error"]
+        out.append(entry)
+    return out
+
+
 def run_native(model: str, host: str, suite, task_id: str) -> dict:
     client = openai.OpenAI(base_url=host.rstrip("/") + "/v1", api_key="ollama")
     llm = _CountingLocalLLM(client, model)
@@ -97,10 +124,33 @@ def run_native(model: str, host: str, suite, task_id: str) -> dict:
         ]
     )
     task = suite.get_user_task_by_id(task_id)
+
+    # run_task_with_pipeline() already does exactly the right thing to
+    # compute utility (message parsing, retries, functions-stack-trace
+    # derivation) -- reimplementing that here would risk a subtle
+    # mismatch with AgentDojo's own scoring. Instead, capture the
+    # message transcript as a side effect of the real call, by wrapping
+    # pipeline.query() to stash its own return value, rather than
+    # re-deriving anything AgentDojo already computes correctly.
+    captured: list[Any] = []
+    real_query = pipeline.query
+
+    def _capturing_query(*args, **kwargs):
+        result = real_query(*args, **kwargs)
+        captured.append(result)
+        return result
+
+    pipeline.query = _capturing_query
+
     start = time.monotonic()
     utility, _ = suite.run_task_with_pipeline(pipeline, task, None, {})
     elapsed = time.monotonic() - start
-    return {"path": "native", "task_id": task_id, "utility": utility, "calls": llm.call_count, "seconds": elapsed}
+
+    transcript = _messages_to_transcript(captured[-1][3]) if captured else []
+    return {
+        "path": "native", "task_id": task_id, "utility": utility,
+        "calls": llm.call_count, "seconds": elapsed, "transcript": transcript,
+    }
 
 
 def run_prompt_lang(model: str, host: str, suite, suite_name: str, task_id: str, max_turns: int = 8) -> dict:
@@ -130,14 +180,25 @@ def run_prompt_lang(model: str, host: str, suite, suite_name: str, task_id: str,
             )
             display = _turn_display_result(stmt, result, session)
             transcript.append((stmt, repr(display)))
-            if isinstance(display, str):
-                model_output += display + "\n"
+            # Found live: isinstance(display, str) dropped every turn that
+            # resolved to a number (or any non-string value) from
+            # model_output entirely, even when the computation was correct
+            # -- a task like "what's my total spending" ends on
+            # `total_spending = total_spending + transaction.amount`, a
+            # float, never a string, so the real answer never reached
+            # utility()'s text check regardless of whether it was right.
+            # Every non-None turn result now contributes, stringified.
+            if display is not None:
+                model_output += str(display) + "\n"
         except Exception as exc:
             transcript.append((stmt, f"ERROR: {exc}"))
     elapsed = time.monotonic() - start
 
     utility = task.utility(model_output, pre_env, env, strict=False)
-    return {"path": "prompt-lang", "task_id": task_id, "utility": utility, "calls": calls, "seconds": elapsed}
+    return {
+        "path": "prompt-lang", "task_id": task_id, "utility": utility,
+        "calls": calls, "seconds": elapsed, "transcript": transcript,
+    }
 
 
 def main() -> None:

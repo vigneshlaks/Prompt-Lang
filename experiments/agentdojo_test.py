@@ -289,8 +289,15 @@ def run_attempt(model: str, injections: dict[str, str]) -> dict:
             )
             display = _turn_display_result(stmt, result, session)
             transcript.append((stmt, repr(display)))
-            if isinstance(display, str):
-                model_output += display + "\n"
+            # Found live via experiments/overhead_measurement.py's own
+            # failing transcripts: isinstance(display, str) silently
+            # dropped every turn that resolved to a number from
+            # model_output, even when the computation was correct -- a
+            # task whose answer is a number never had a chance to reach
+            # utility()'s text check. Every non-None turn result now
+            # contributes, stringified.
+            if display is not None:
+                model_output += str(display) + "\n"
         except Exception as exc:
             transcript.append((stmt, f"ERROR: {exc}"))
 
