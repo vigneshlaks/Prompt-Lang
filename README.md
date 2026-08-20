@@ -755,9 +755,11 @@ genuine, current limitation, not a hidden strength:
   added properly — each dict entry carries a 5-tuple with the key's own
   trust/secrecy alongside the value's, not one blunt tag for the whole
   dict, so an untrusted value in one entry doesn't drag an unrelated,
-  individually-safe key down with it. Not yet covered by the fuzzer,
-  which doesn't generate dict-shaped programs at all — the remaining
-  gaps above are the ones still real.
+  individually-safe key down with it. Now covered by the fuzzer too —
+  three new hop types, with its own detection power reverified by
+  deliberately reintroducing the aggregate-tag shortcut and confirming
+  a real failing case before restoring the real implementation — the
+  remaining gaps above are the ones still real.
   This is the one piece of narrowness that's actually load-bearing for
   the security claim, not a gap to close — see the README's own
   argument for why growing this deliberately trades away the property

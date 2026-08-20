@@ -18,6 +18,20 @@ gated on it (including via the in/not-in operator) -- the same shapes
 the hand-written adversarial tests sampled a few points from, searched
 here at volume instead.
 
+Dicts were entirely absent from this generator until dict iteration
+was added to the interpreter (each dict entry now stores a 5-tuple --
+value, value_trust, value_secrecy, key_trust, key_secrecy -- instead of
+the old 3-tuple, so a key can carry its own precise tag independent of
+its value's). Three dict-specific hops were added to close that gap,
+not just the basic value-read case: a value-side wrap/unwrap mirroring
+the existing listwrap hop, a key-side round-trip that puts the tracked
+variable through a dict *key* and reads it back via iteration (the new
+capability itself, not just the old value-reading path), and a
+cross-contamination check -- the exact adversarial case verified by
+hand when this was built: an unrelated entry's freshly-read untrusted
+value must not leak onto a different, individually-clean key's own tag
+when both live in the same dict.
+
 Fixed seed for reproducibility: a failure here should be a real,
 replayable finding, not a flake.
 """
@@ -91,6 +105,7 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
         hop = rng.choice([
             "ordinary", "sanitize", "declassify", "listwrap",
             "mix_untrusted", "mix_secret",
+            "dictwrap", "dict_key_roundtrip", "dict_key_no_cross_contamination",
         ])
         if hop == "ordinary":
             stmts.append(f"{var} = ordinary({var})")
@@ -108,6 +123,33 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
         elif hop == "mix_secret":
             stmts.append(f"{var} = mix({var}, read_secret())")
             secret = True
+        elif hop == "dictwrap":
+            # Value-side wrap/unwrap through a dict -- mirrors listwrap,
+            # regression coverage for the read path that already worked
+            # before dict iteration existed. Ground truth unchanged: a
+            # dict value keeps its own precise tag through a subscript
+            # read, same as a list element does.
+            stmts.append(f'{var} = {{"k": {var}, "other": trusted_val()}}["k"]')
+        elif hop == "dict_key_roundtrip":
+            # var becomes a dict *key* (mapped to an unrelated trusted
+            # value) and gets read back out via iteration -- the actual
+            # new capability, not just the old value-reading path.
+            # Single-entry dict, so the loop body runs exactly once;
+            # ground truth unchanged if the key's own precise tag
+            # survived the round trip correctly.
+            stmts.append(f"for _dk in {{{var}: trusted_val()}}:\n    {var} = _dk")
+        elif hop == "dict_key_no_cross_contamination":
+            # The exact adversarial case verified by hand when dict
+            # iteration was built: a second, unrelated entry with a
+            # freshly-read untrusted value must not leak onto var's own
+            # key. Isolate var's own entry with an explicit equality
+            # check inside the loop (dict iteration order alone can't
+            # be relied on to land on the right one without it) rather
+            # than assuming which key comes first.
+            stmts.append(
+                f'_poison = {{{var}: trusted_val(), "__poison_marker__": mix(trusted_val(), read_untrusted())}}\n'
+                f"for _pk in _poison:\n    if _pk == {var}:\n        {var} = _pk"
+            )
 
     action = rng.choice(["privileged", "sink"])
     gate = rng.choice(["direct", "eq_branch", "in_branch"])
