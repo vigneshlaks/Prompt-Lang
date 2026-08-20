@@ -692,6 +692,25 @@ condition across 10 answers — it became evasive rather than accurate.
 A real, partial, model-dependent effect on one failure mode, not a fix
 for the underlying problem.
 
+**What actually closes it: a human-in-the-loop gate, not another
+content-level defense.** Every mitigation up to this point tried to
+detect or hide something about the value itself — a retyped literal,
+raw content, a suspicious-looking answer. `prompt_lang/approval.py`
+takes a structurally different approach: any value produced by
+`describe_handle` gets flagged unconditionally, and any privileged call
+that later carries it — through a variable, a retyped literal, however
+— gets routed through an approval callback before it's allowed to run.
+It doesn't matter whether the value looks wrong, because nothing here
+depends on judging the value at all. Verified against the exact
+manipulated-answer scenario the live run documented (a fake
+`describe_handle` returning the attacker's IBAN, used through a proper
+variable, precisely reproducing the real transcript): deny mode blocks
+it, allow mode still completes the legitimate task correctly. Wired
+into `experiments/retyping_guard_live_test.py` with `--approve-mode
+deny/allow/interactive`. Not yet run against a real model in the loop —
+the hand-constructed check proves the mechanism is sound, not that a
+live agent behaves as expected around it.
+
 ## Limitations, and how this compares to what AgentDojo already is
 
 AgentDojo turned out to be more than a labeled benchmark once actually
