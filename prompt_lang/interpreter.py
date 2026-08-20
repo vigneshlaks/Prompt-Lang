@@ -105,11 +105,23 @@ multiply past a single fixed total.
 Lists and dicts both carry trust and secrecy per element, not as one tag
 for the whole collection. A list literal evaluates each element the
 normal way and stores the full list of (value, Trust, Secrecy) triples as
-its value; a dict literal does the same per key/value pair. Indexing and
-for loops (lists only -- dicts don't support iteration yet) read that
-structure directly, so a container mixing trusted and untrusted, or
-public and secret, items keeps each item's own tags instead of collapsing
-to one.
+its value. A dict literal stores, per entry, a
+(value, value_trust, value_secrecy, key_trust, key_secrecy) 5-tuple --
+the key itself stays a bare raw value (real dict lookup by a plain key
+has to keep working, and a tagged key would never equal the bare value
+someone looks it up by), with its own trust/secrecy carried alongside
+rather than folded into the key. Indexing and for loops both work on
+lists and dicts: indexing a dict reads an entry's value and its own
+trust/secrecy; `for key in some_dict:` iterates keys, each with its own
+precise key_trust/key_secrecy rather than one aggregate tag for the
+whole dict -- found worth doing precisely, not with the cheaper
+shortcut of tagging every key with the dict's own overall trust,
+because that shortcut would let one untrusted entry drag every other,
+individually fine key down with it, an over-restriction cost with a
+real, already-observed precedent in this project (see notes on the
+implicit-flow pc_trust mitigation elsewhere in this file). A container
+mixing trusted and untrusted, or public and secret, items keeps each
+item's own tags instead of collapsing to one.
 
 A plain Python list or dict handed back by a function in `allowed` has no
 per-element tags of its own -- the interpreter never watched it get
@@ -356,10 +368,24 @@ def _is_tagged_list(value: Any) -> bool:
 
 def _is_tagged_dict(value: Any) -> bool:
     """True if value is already shaped like a dict this interpreter
-    builds: a dict whose every value is a (value, Trust, Secrecy) triple.
-    An empty dict counts as tagged, vacuously."""
+    builds: a dict whose every value is a
+    (value, value_trust, value_secrecy, key_trust, key_secrecy) 5-tuple.
+    An empty dict counts as tagged, vacuously.
+
+    The key itself is deliberately stored raw, not wrapped -- Python
+    dict lookup requires the stored key to equal whatever a caller
+    looks it up by (`d["x"]`), and a tagged tuple would never equal the
+    bare string being looked up. The key's own trust/secrecy rides
+    alongside the value in the same 5-tuple instead, so `for key in
+    some_dict:` can give each key its own precise tag (see ast.For)
+    without breaking lookup by raw key."""
     return isinstance(value, dict) and all(
-        isinstance(v, tuple) and len(v) == 3 and isinstance(v[1], Trust) and isinstance(v[2], Secrecy)
+        isinstance(v, tuple)
+        and len(v) == 5
+        and isinstance(v[1], Trust)
+        and isinstance(v[2], Secrecy)
+        and isinstance(v[3], Trust)
+        and isinstance(v[4], Secrecy)
         for v in value.values()
     )
 
@@ -397,7 +423,7 @@ def unwrap_value(value: Any) -> Any:
     if _is_tagged_list(value):
         return [unwrap_value(v) for v, _, _ in value]
     if _is_tagged_dict(value):
-        return {k: unwrap_value(v) for k, (v, _, _) in value.items()}
+        return {k: unwrap_value(v) for k, (v, _, _, _, _) in value.items()}
     return value
 
 
@@ -416,7 +442,15 @@ def _has_untrusted(value: Any, trust: Trust) -> bool:
     if isinstance(value, list) and _is_tagged_list(value):
         return any(_has_untrusted(v, t) for v, t, _ in value)
     if isinstance(value, dict) and _is_tagged_dict(value):
-        return any(_has_untrusted(v, t) for v, t, _ in value.values())
+        # Keys can be individually untrusted too, now that each entry
+        # carries its own key_trust separately from the value's trust
+        # -- checked directly (kt == Trust.UNTRUSTED), not recursively,
+        # since a dict key must be hashable and therefore can never
+        # itself be a nested tagged list/dict.
+        return any(
+            _has_untrusted(v, vt) or kt == Trust.UNTRUSTED
+            for v, vt, _, kt, _ in value.values()
+        )
     return False
 
 
@@ -431,26 +465,14 @@ def _has_secret(value: Any, secrecy: Secrecy) -> bool:
     if isinstance(value, list) and _is_tagged_list(value):
         return any(_has_secret(v, s) for v, _, s in value)
     if isinstance(value, dict) and _is_tagged_dict(value):
-        return any(_has_secret(v, s) for v, _, s in value.values())
-    return False
-
-
-def _as_tagged_list(value: Any, context: str) -> list[tuple[Any, Trust, Secrecy]]:
-    """Checks that value is shaped like a list this interpreter itself
-    builds: a list of (value, Trust, Secrecy) triples. Raises
-    InterpreterError with a clear explanation rather than letting a plain
-    Python list fail with a confusing unpacking error somewhere
-    downstream. Calls in `allowed` that return a plain list get it
-    auto-wrapped into this shape before it ever reaches here (see
-    eval_node's ast.Call case), so this only rejects a list that was
-    never given a trust/secrecy shape at all."""
-    if not _is_tagged_list(value):
-        raise InterpreterError(
-            f"{context} requires a list built with a list literal (or a "
-            "function in `allowed` returning one) -- a plain list has no "
-            "per-element trust or secrecy to read"
+        # Same reasoning as _has_untrusted: a key's own secrecy is
+        # checked directly, not recursively -- a dict key can't itself
+        # be a nested tagged container, since it must be hashable.
+        return any(
+            _has_secret(v, vs) or ks == Secrecy.SECRET
+            for v, _, vs, _, ks in value.values()
         )
-    return value
+    return False
 
 
 def eval_node(
@@ -554,7 +576,16 @@ def eval_node(
         if isinstance(result, list) and not _is_tagged_list(result):
             result = [(item, result_trust, result_secrecy) for item in result]
         elif isinstance(result, dict) and not _is_tagged_dict(result):
-            result = {k: (v, result_trust, result_secrecy) for k, v in result.items()}
+            # Uniform, not precise, same principle as list auto-wrap:
+            # a plain dict from a real function has no per-key/per-value
+            # trust information of its own, so both the key and the
+            # value in every entry get the call's own result_trust/
+            # result_secrecy -- the interpreter never watched this dict
+            # get built, so it has nothing finer-grained to give it.
+            result = {
+                k: (v, result_trust, result_secrecy, result_trust, result_secrecy)
+                for k, v in result.items()
+            }
         return result, result_trust, result_secrecy
     if isinstance(node, ast.Constant):
         return node.value, Trust.TRUSTED, Secrecy.PUBLIC
@@ -633,10 +664,17 @@ def eval_node(
             key, key_trust, key_secrecy = eval_node(key_node, allowed, env, caps, pc_trust, pc_secrecy)
             value_result = eval_node(value_node, allowed, env, caps, pc_trust, pc_secrecy)
             entries.append((key, key_trust, key_secrecy, value_result))
-        result_dict: dict[Any, tuple[Any, Trust, Secrecy]] = {}
-        for key, _, _, value_result in entries:
+        # Each entry stores (value, value_trust, value_secrecy,
+        # key_trust, key_secrecy) -- the key itself stays the bare raw
+        # value as the actual Python dict key (lookup by a plain key
+        # has to keep working), with its own trust/secrecy carried
+        # alongside rather than folded into the key. See
+        # _is_tagged_dict's docstring for why a tagged key can't be the
+        # stored key itself.
+        result_dict: dict[Any, tuple[Any, Trust, Secrecy, Trust, Secrecy]] = {}
+        for key, key_trust, key_secrecy, (value, value_trust, value_secrecy) in entries:
             try:
-                result_dict[key] = value_result
+                result_dict[key] = (value, value_trust, value_secrecy, key_trust, key_secrecy)
             except TypeError as exc:
                 raise InterpreterError(f"unhashable dict key: {key!r}") from exc
         dict_trust = Trust.TRUSTED
@@ -661,11 +699,18 @@ def eval_node(
                 raise InterpreterError(f"list index out of range: {index}") from exc
         if _is_tagged_dict(container):
             try:
-                return container[index]
+                entry = container[index]
             except KeyError as exc:
                 raise InterpreterError(f"dict has no key: {index!r}") from exc
             except TypeError as exc:
                 raise InterpreterError(f"unhashable dict key: {index!r}") from exc
+            # entry is the 5-tuple (value, value_trust, value_secrecy,
+            # key_trust, key_secrecy) -- indexing produces the value,
+            # not the key, so only the first three fields are the
+            # actual expression result here; the key's own tag matters
+            # for iteration (ast.For), not for a lookup by that key.
+            value, value_trust, value_secrecy, _key_trust, _key_secrecy = entry
+            return value, value_trust, value_secrecy
         raise InterpreterError(
             "subscripting requires a list or dict built with a literal (or "
             "a function in `allowed` returning one) -- a plain value has "
@@ -784,7 +829,24 @@ def exec_stmt(
         iterable, iterable_trust, iterable_secrecy = eval_node(
             node.iter, allowed, env, caps, pc_trust, pc_secrecy
         )
-        tagged = _as_tagged_list(iterable, "a for loop's iterable")
+        if _is_tagged_list(iterable):
+            tagged = iterable
+        elif _is_tagged_dict(iterable):
+            # Iterating a dict walks its keys, matching real Python's
+            # `for x in some_dict:` -- each key gets its own precise
+            # trust/secrecy (key_trust, key_secrecy), stored alongside
+            # its value in the 5-tuple entry, not the dict's one
+            # aggregate tag. This is the whole point of storing keys
+            # this way (see _is_tagged_dict's docstring): a key from a
+            # dict with one untrusted entry doesn't drag every other
+            # key down with it.
+            tagged = [(key, key_trust, key_secrecy) for key, (_, _, _, key_trust, key_secrecy) in iterable.items()]
+        else:
+            raise InterpreterError(
+                "a for loop's iterable requires a list or dict built with a "
+                "literal (or a function in `allowed` returning one) -- a "
+                "plain value has no per-element trust or secrecy to read"
+            )
         body_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or iterable_trust == Trust.UNTRUSTED else Trust.TRUSTED
         body_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or iterable_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
         result = None

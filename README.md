@@ -746,12 +746,18 @@ genuine, current limitation, not a hidden strength:
   with its own argument parser, rather than one coherent tool the way
   `agentdojo/scripts/benchmark.py` is.
 - **Narrower by design, not by oversight, on the language side.** No
-  function definitions, no exception handling, no dict iteration, no
-  string slicing/indexing, no built-in functions beyond whatever a
-  task explicitly whitelists. Attribute access (`transaction.amount`)
-  was added since this was first written, once it was verified there's
-  no path from an attribute read back to a callable whitelisted name —
-  the remaining gaps above are the ones still real.
+  function definitions, no exception handling, no string slicing/
+  indexing, no built-in functions beyond whatever a task explicitly
+  whitelists. Two things listed here as gaps earlier are closed:
+  attribute access (`transaction.amount`) was added once it was
+  verified there's no path from an attribute read back to a callable
+  whitelisted name, and dict iteration (`for key in some_dict:`) was
+  added properly — each dict entry carries a 5-tuple with the key's own
+  trust/secrecy alongside the value's, not one blunt tag for the whole
+  dict, so an untrusted value in one entry doesn't drag an unrelated,
+  individually-safe key down with it. Not yet covered by the fuzzer,
+  which doesn't generate dict-shaped programs at all — the remaining
+  gaps above are the ones still real.
   This is the one piece of narrowness that's actually load-bearing for
   the security claim, not a gap to close — see the README's own
   argument for why growing this deliberately trades away the property

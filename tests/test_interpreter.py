@@ -1131,6 +1131,134 @@ def test_list_containing_an_untrusted_element_is_untrusted_as_a_whole():
         )
 
 
+def test_for_loop_iterates_over_a_dict_literals_keys():
+    calls = []
+
+    def visit(x):
+        calls.append(x)
+
+    run('for k in {"a": 1, "b": 2}:\n    visit(k)', {"visit": visit})
+    assert calls == ["a", "b"]
+
+
+def test_dict_key_keeps_its_own_trust_independent_of_a_sibling_entrys_value():
+    # The whole reason dict entries were changed to a 5-tuple instead of
+    # the aggregate-tag shortcut: a key from an entry whose own value is
+    # untrusted must not drag an unrelated, individually-fine key down
+    # with it. This is exactly the case an aggregate dict-level tag
+    # would have gotten wrong.
+    def read_secret():
+        return "untrusted content"
+
+    def approve(x):
+        return x
+
+    result = run(
+        'd = {"safe_key": read_secret()}\nfor k in d:\n    y = k\napprove(y)',
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert result == "safe_key"
+
+
+def test_privileged_call_blocked_using_an_untrusted_dict_key_from_iteration():
+    def read_untrusted_key():
+        return "attacker-controlled-key"
+
+    def approve(x):
+        raise AssertionError("must not run: key itself was untrusted")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'k = read_untrusted_key()\nd = {k: 1}\nfor key in d:\n    approve(key)',
+            {"read_untrusted_key": read_untrusted_key, "approve": approve},
+            sources=frozenset({"read_untrusted_key"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_dict_with_an_untrusted_key_is_caught_when_passed_wholesale_too():
+    # Not just iteration -- passing the whole dict directly to a
+    # privileged call must also see the untrusted key, the same
+    # container-laundering check already applied to values.
+    def read_untrusted_key():
+        return "attacker-controlled-key"
+
+    def approve(x):
+        raise AssertionError("must not run: dict contains an untrusted key")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'k = read_untrusted_key()\nd = {k: 1}\napprove(d)',
+            {"read_untrusted_key": read_untrusted_key, "approve": approve},
+            sources=frozenset({"read_untrusted_key"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_sink_call_blocked_using_a_secret_dict_key_from_iteration():
+    def get_secret_key():
+        return "sk-secret-key"
+
+    def post(x):
+        raise AssertionError("must not run: key itself was secret")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            'k = get_secret_key()\nd = {k: 1}\nfor key in d:\n    post(key)',
+            {"get_secret_key": get_secret_key, "post": post},
+            confidential=frozenset({"get_secret_key"}),
+            sinks=frozenset({"post"}),
+        )
+
+
+def test_for_loop_over_a_dict_from_an_untrusted_source_taints_pc_trust():
+    # Iterable-level implicit-flow protection, mirroring the existing
+    # list case: the dict itself coming from an untrusted source must
+    # raise pc_trust for the whole loop body, independent of any
+    # individual key's own tag.
+    def get_dict():
+        return {"harmless_key": 1}
+
+    def approve(x):
+        raise AssertionError("must not run: reached only via an untrusted iterable")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "for k in get_dict():\n    approve(k)",
+            {"get_dict": get_dict, "approve": approve},
+            sources=frozenset({"get_dict"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_dict_indexing_still_returns_the_right_value_after_the_5_tuple_change():
+    result = run('d = {"a": 5}\nd["a"]', {})
+    assert result == 5
+
+
+def test_auto_wrapped_dict_from_a_source_taints_both_keys_and_values():
+    def read_dict_source():
+        return {"x": "y"}
+
+    def approve(x):
+        raise AssertionError("must not run: auto-wrapped key was untrusted")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "d = read_dict_source()\nfor k in d:\n    approve(k)",
+            {"read_dict_source": read_dict_source, "approve": approve},
+            sources=frozenset({"read_dict_source"}),
+            privileged=frozenset({"approve"}),
+        )
+
+
+def test_for_loop_over_a_non_container_raises_a_clear_error():
+    with pytest.raises(InterpreterError):
+        run("for x in 5:\n    y = x", {})
+
+
 def test_while_loop_executes_body_while_condition_true():
     calls = []
 
