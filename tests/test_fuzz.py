@@ -49,6 +49,27 @@ hand-verified and mutation-tested when function definitions were
 built. This searches that property at random volume across many chain
 shapes instead of the handful of hand-written cases.
 
+String methods got the same treatment once they were added to the
+interpreter. The generator now tracks a third piece of ground truth,
+`is_string`, alongside untrusted/secret -- `trusted_val()` returns a
+plain int, and calling a string method on it must raise rather than
+match any expected security outcome, so string-method hops/gates are
+only ever chosen when the tracked variable is actually a string at
+that point in the chain (true after every source read, since
+`read_untrusted`/`read_secret`/`mix` all produce strings; false only
+after `trusted_val()`). "string_method_wrap" mirrors "ordinary" through
+`.upper()` instead of a whitelisted function -- receiver-position trust
+propagation. "string_method_arg_taint" mirrors the "mix_*" hops but
+through a method's *argument* position instead of a plain function
+argument -- `"fixed-text".replace(var, "Y")`, confirming trust/secrecy
+combine from an argument to a method call, not just its receiver.  Most
+importantly, a new "string_method_branch" gate uses `var.startswith(var)`
+as the branch condition instead of `var == var` -- the direct,
+random-volume analog of "eq_branch" and "func_branch" for the newest
+expression type capable of gating a branch, checking that pc_trust/
+pc_secrecy elevation works through a method-call condition exactly the
+way it already does through a comparison or a function call.
+
 Fixed seed for reproducibility: a failure here should be a real,
 replayable finding, not a flake.
 """
@@ -123,20 +144,33 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
 
     if untrusted and secret:
         stmts.append(f"{var} = mix(read_untrusted(), read_secret())")
+        is_string = True
     elif untrusted:
         stmts.append(f"{var} = read_untrusted()")
+        is_string = True
     elif secret:
         stmts.append(f"{var} = read_secret()")
+        is_string = True
     else:
         stmts.append(f"{var} = trusted_val()")
+        is_string = False
 
     for _ in range(rng.randint(0, 3)):
-        hop = rng.choice([
+        hop_choices = [
             "ordinary", "sanitize", "declassify", "listwrap",
             "mix_untrusted", "mix_secret",
             "dictwrap", "dict_key_roundtrip", "dict_key_no_cross_contamination",
             "func_wrap",
-        ])
+        ]
+        if is_string:
+            # trusted_val() returns a plain int -- calling a string
+            # method on it would raise InterpreterError, an outcome the
+            # generator has no ground truth for, so these are only ever
+            # chosen once the tracked variable is actually a string.
+            # Every hop here returns a string too, so is_string never
+            # needs to flip back to False mid-chain.
+            hop_choices += ["string_method_wrap", "string_method_arg_taint"]
+        hop = rng.choice(hop_choices)
         if hop == "ordinary":
             stmts.append(f"{var} = ordinary({var})")
         elif hop == "sanitize":
@@ -186,9 +220,27 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             # function -- ground truth unchanged if trust/secrecy
             # survive a normal function call round trip.
             stmts.append(f"{var} = identity_func({var})")
+        elif hop == "string_method_wrap":
+            # Passthrough hop shaped like "ordinary", but through a
+            # real Python str method's receiver position instead of a
+            # whitelisted function -- ground truth unchanged if
+            # trust/secrecy propagate from the receiver correctly.
+            stmts.append(f"{var} = {var}.upper()")
+        elif hop == "string_method_arg_taint":
+            # Mirrors the "mix_*" hops, but the tracked variable is the
+            # *argument* to a method call instead of a plain function
+            # argument -- a fixed, unrelated trusted string is the
+            # receiver, so any tag on the result can only have come
+            # from var's own argument-position tag. Ground truth
+            # unchanged: this is still just var's own existing tag,
+            # not a new taint introduced or removed.
+            stmts.append(f'{var} = "fixed-trusted-text".replace({var}, "Y")')
 
     action = rng.choice(["privileged", "sink"])
-    gate = rng.choice(["direct", "eq_branch", "in_branch", "func_branch"])
+    gate_choices = ["direct", "eq_branch", "in_branch", "func_branch"]
+    if is_string:
+        gate_choices.append("string_method_branch")
+    gate = rng.choice(gate_choices)
 
     if action == "privileged":
         if gate == "direct":
@@ -197,8 +249,10 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             stmts.append(f"if {var} == {var}:\n    privileged_action()")
         elif gate == "in_branch":
             stmts.append(f"if {var} in [{var}]:\n    privileged_action()")
-        else:
+        elif gate == "func_branch":
             stmts.append(f"if {var} == {var}:\n    call_privileged()")
+        else:
+            stmts.append(f"if {var}.startswith({var}):\n    privileged_action()")
         expect_cap_error = untrusted
         expect_conf_error = False
     else:
@@ -208,8 +262,10 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             stmts.append(f"if {var} == {var}:\n    sink_action()")
         elif gate == "in_branch":
             stmts.append(f"if {var} in [{var}]:\n    sink_action()")
-        else:
+        elif gate == "func_branch":
             stmts.append(f"if {var} == {var}:\n    call_sink()")
+        else:
+            stmts.append(f"if {var}.startswith({var}):\n    sink_action()")
         expect_cap_error = False
         expect_conf_error = secret
 
