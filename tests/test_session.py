@@ -137,3 +137,20 @@ def test_two_sessions_are_independent():
     run_turn(session_a, "x = 1", {})
     with pytest.raises(InterpreterError):
         run_turn(session_b, "x", {})
+
+
+def test_function_defined_in_one_turn_can_be_called_in_a_later_turn():
+    # Function definitions persist across turns the same way env and
+    # the budget already do -- Session.functions mirrors Session.budget.
+    session = Session()
+    run_turn(session, "def add(a, b):\n    a + b", {})
+    result = run_turn(session, "add(2, 3)", {})
+    assert result == 5
+
+
+def test_two_sessions_do_not_share_function_definitions():
+    session_a = Session()
+    session_b = Session()
+    run_turn(session_a, "def add(a, b):\n    a + b", {})
+    with pytest.raises(InterpreterError):
+        run_turn(session_b, "add(1, 2)", {})

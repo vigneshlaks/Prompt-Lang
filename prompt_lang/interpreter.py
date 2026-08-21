@@ -13,7 +13,8 @@ and names, and eval() is never called on anything a model produced.
 Toy grammar supported so far (informal EBNF):
 
     program    := statement*
-    statement  := assign | if_stmt | while_stmt | for_stmt | expr_stmt
+    statement  := assign | if_stmt | while_stmt | for_stmt | func_def | expr_stmt
+    func_def   := "def" NAME "(" (NAME ("," NAME)*)? ")" ":" NEWLINE INDENT statement+ DEDENT
     assign     := NAME "=" expr
     if_stmt    := "if" expr ":" NEWLINE INDENT statement+ DEDENT
                   ("else" ":" NEWLINE INDENT statement+ DEDENT)?
@@ -235,6 +236,49 @@ run()'s budget is shared across every loop in one program, closing the
 same class of gap the same way: many turns, each individually
 unremarkable, can't multiply past a fixed total any more than many
 nested loops could.
+
+Function definitions (`def name(params): body`) are deliberately the
+smallest useful shape, not the full Python feature: plain positional
+parameters only, no defaults, no *args/**kwargs, no keyword-only
+parameters, no decorators, no return-type annotation, and no `return`
+statement at all -- a function's result is whatever its last statement
+evaluates to, the same convention run()/run_turn() already use at the
+top level and if/while/for bodies use for their own value. Adding real
+`return` semantics would mean building a control-flow-unwinding
+mechanism this interpreter has never needed before, for a capability
+not yet shown to be necessary. A function name colliding with an
+`allowed` (whitelisted) name is rejected at definition time, so there's
+never ambiguity about which one a call dispatches to. A function body
+executes against a fresh, isolated local env with no access to the
+caller's variables at all -- no closures -- which keeps a function's
+result provably a function of only its own tagged arguments, not of
+some outer-scope value it wasn't explicitly given. Recursion, direct or
+mutual, is refused outright rather than bounded with a depth limit:
+loops already have a shared iteration budget that correctly extends to
+loops inside a function body for free (the same budget object is
+threaded through), but nothing bounds Python's own call-stack depth,
+and recursion is the one new way this addition could exhaust it -- a
+flat ban is narrower than building a whole new depth-limiting
+mechanism for a construct not yet shown to be needed, and it was found
+worth verifying directly, not assumed: removing the check reproduces a
+real `RecursionError` immediately, confirmed live before trusting the
+guard.
+
+The one genuinely new implicit-flow question this raises, worked
+through before writing any code: a function call is a continuation of
+the caller's own control-flow context, not a fresh entry point, so it
+must inherit the call site's own pc_trust/pc_secrecy into the function
+body's execution rather than resetting to TRUSTED/PUBLIC -- the same
+reasoning ast.If/ast.While/ast.For already use when a tainted condition
+elevates the pc for whatever runs inside. Skipping this would reopen
+the exact bug pc_trust was built to close, through a new door:
+`if untrusted_cond: my_func()`, where my_func()'s body unconditionally
+calls a privileged function with no argument dependency at all -- if
+the function body started fresh at TRUSTED regardless of the untrusted
+branch that reached it, the call inside would run unblocked. This is
+distinct from run()/run_turn() themselves deliberately resetting pc to
+TRUSTED/PUBLIC for each new top-level statement -- those are genuinely
+fresh entry points, a function call is not.
 """
 
 from __future__ import annotations
@@ -351,6 +395,130 @@ class _IterationBudget:
             raise InterpreterError(
                 f"program exceeded {self.limit} total loop iterations across all loops"
             )
+
+
+class _FunctionRegistry:
+    """Holds user-defined function definitions (`def name(params): body`)
+    and a recursion guard, plus a reference to the same _IterationBudget
+    already threaded through exec_stmt for loops. eval_node needs its
+    own way to reach the budget too, now that a function call means
+    eval_node has to run a function body's statements via nested
+    exec_stmt calls -- something eval_node never needed to do before
+    functions existed, since previously only exec_stmt ever called
+    exec_stmt (for loop bodies and if/else branches), never eval_node.
+    One registry per run()/run_turn() call, same scoping as caps and
+    budget -- never shared across independent runs, and (unlike env)
+    never given to a function body directly either: see the ast.Call
+    handling for why a function body gets a fresh, isolated local env
+    with no access to the caller's variables at all -- no closures."""
+
+    __slots__ = ("defs", "call_stack", "budget")
+
+    def __init__(self, budget: _IterationBudget):
+        self.defs: dict[str, ast.FunctionDef] = {}
+        self.call_stack: set[str] = set()
+        self.budget = budget
+
+
+def _call_user_function(
+    node: ast.Call,
+    name: str,
+    allowed: dict[str, Callable],
+    env: dict[str, tuple[Any, Trust, Secrecy]],
+    caps: "_Capabilities",
+    pc_trust: Trust,
+    pc_secrecy: Secrecy,
+    functions: "_FunctionRegistry",
+) -> tuple[Any, Trust, Secrecy]:
+    """Calls a user-defined function (`def name(params): body`).
+    Recursion -- calling a function while it's already on the call
+    stack, directly or through another function it calls -- is refused
+    outright rather than bounded with a depth limit: loops already have
+    a shared iteration budget that correctly extends to loops inside a
+    function body for free (the same budget object is threaded
+    through), but nothing bounds Python's own call-stack depth, and
+    recursion is the one new way this addition could exhaust it. A flat
+    ban is a narrower fix than building a whole new depth-limiting
+    mechanism for a construct not yet shown to be needed. call_stack
+    tracks every currently-in-progress function regardless of depth, so
+    mutual recursion (f calls g calls f) is caught the same way direct
+    recursion is -- not just the immediate case.
+
+    The call site's own pc_trust/pc_secrecy become the function body's
+    STARTING pc, not reset to TRUSTED/PUBLIC -- a function call is a
+    continuation of the current control-flow context, the same
+    reasoning ast.If/ast.While/ast.For already use when a tainted
+    condition elevates the pc for whatever runs inside. Skipping this
+    would reopen the exact bug pc_trust was built to close, through a
+    new door: `if untrusted_cond: my_func()` where my_func()'s body
+    unconditionally calls a privileged function with no argument
+    dependency at all -- if the function body started fresh at TRUSTED
+    regardless of the untrusted branch that reached it, the call inside
+    would run unblocked. run()/run_turn() deliberately DO reset pc to
+    TRUSTED/PUBLIC for each new top-level statement, because those are
+    genuinely fresh entry points, not continuations of anything -- a
+    function call is not that.
+
+    The function body executes against a fresh, isolated local env --
+    no access to the caller's variables at all, no closures. This keeps
+    a function's result provably a pure function of only its own tagged
+    arguments: nothing about how it behaves can depend on an outer-scope
+    value it wasn't explicitly given, which would otherwise muddy where
+    a result's trust/secrecy actually came from."""
+    func_def = functions.defs[name]
+    if name in functions.call_stack:
+        raise InterpreterError(f"recursive function calls are not supported: {name!r}")
+
+    arg_results = [
+        eval_node(a, allowed, env, caps, pc_trust, pc_secrecy, functions) for a in node.args
+    ]
+    kwarg_results = {
+        kw.arg: eval_node(kw.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
+        for kw in node.keywords
+    }
+
+    param_names = [p.arg for p in func_def.args.args]
+    if len(node.args) > len(param_names):
+        raise InterpreterError(
+            f"{name}() takes {len(param_names)} argument(s) but "
+            f"{len(node.args)} positional argument(s) were given"
+        )
+    positional_names = param_names[: len(node.args)]
+    remaining_names = set(param_names[len(node.args):])
+    provided_kwargs = set(kwarg_results)
+    duplicate = provided_kwargs & set(positional_names)
+    if duplicate:
+        raise InterpreterError(
+            f"{name}() got multiple values for argument(s): {', '.join(sorted(duplicate))}"
+        )
+    unexpected = provided_kwargs - remaining_names
+    if unexpected:
+        raise InterpreterError(
+            f"{name}() got unexpected keyword argument(s): {', '.join(sorted(unexpected))}"
+        )
+    missing = remaining_names - provided_kwargs
+    if missing:
+        raise InterpreterError(
+            f"{name}() missing required argument(s): {', '.join(sorted(missing))}"
+        )
+
+    local_env: dict[str, tuple[Any, Trust, Secrecy]] = {}
+    for pname, arg_result in zip(positional_names, arg_results):
+        local_env[pname] = arg_result
+    for kw in node.keywords:
+        local_env[kw.arg] = kwarg_results[kw.arg]
+
+    functions.call_stack.add(name)
+    try:
+        result = None
+        for stmt in func_def.body:
+            result = exec_stmt(
+                stmt, allowed, local_env, caps, pc_trust, pc_secrecy,
+                functions.budget, functions,
+            )
+    finally:
+        functions.call_stack.discard(name)
+    return result if result is not None else (None, Trust.TRUSTED, Secrecy.PUBLIC)
 
 
 def _is_tagged_list(value: Any) -> bool:
@@ -483,6 +651,7 @@ def eval_node(
     caps: _Capabilities,
     pc_trust: Trust = Trust.TRUSTED,
     pc_secrecy: Secrecy = Secrecy.PUBLIC,
+    functions: "_FunctionRegistry | None" = None,
 ) -> tuple[Any, Trust, Secrecy]:
     """Evaluates a single expression node: a call, a constant, a variable
     read, a comparison, a list literal, a dict literal, or a subscript.
@@ -500,12 +669,14 @@ def eval_node(
             raise InterpreterError("calls must be a plain function name")
         name = node.func.id
         if name not in allowed:
+            if functions is not None and name in functions.defs:
+                return _call_user_function(node, name, allowed, env, caps, pc_trust, pc_secrecy, functions)
             raise InterpreterError(f"unknown or disallowed name: {name}")
         arg_results = [
-            eval_node(a, allowed, env, caps, pc_trust, pc_secrecy) for a in node.args
+            eval_node(a, allowed, env, caps, pc_trust, pc_secrecy, functions) for a in node.args
         ]
         kwarg_results = {
-            kw.arg: eval_node(kw.value, allowed, env, caps, pc_trust, pc_secrecy)
+            kw.arg: eval_node(kw.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
             for kw in node.keywords
         }
         all_args = arg_results + list(kwarg_results.values())
@@ -603,12 +774,12 @@ def eval_node(
         result = True
         result_trust = Trust.TRUSTED
         result_secrecy = Secrecy.PUBLIC
-        prev, prev_trust, prev_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
+        prev, prev_trust, prev_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy, functions)
         result_trust = Trust.UNTRUSTED if prev_trust == Trust.UNTRUSTED else result_trust
         result_secrecy = Secrecy.SECRET if prev_secrecy == Secrecy.SECRET else result_secrecy
         for op_node, comparator_node in zip(node.ops, node.comparators):
             curr, curr_trust, curr_secrecy = eval_node(
-                comparator_node, allowed, env, caps, pc_trust, pc_secrecy
+                comparator_node, allowed, env, caps, pc_trust, pc_secrecy, functions
             )
             result_trust = Trust.UNTRUSTED if curr_trust == Trust.UNTRUSTED else result_trust
             result_secrecy = Secrecy.SECRET if curr_secrecy == Secrecy.SECRET else result_secrecy
@@ -624,7 +795,7 @@ def eval_node(
         result_secrecy = Secrecy.PUBLIC
         for value_node in node.values:
             result, value_trust, value_secrecy = eval_node(
-                value_node, allowed, env, caps, pc_trust, pc_secrecy
+                value_node, allowed, env, caps, pc_trust, pc_secrecy, functions
             )
             result_trust = Trust.UNTRUSTED if value_trust == Trust.UNTRUSTED else result_trust
             result_secrecy = Secrecy.SECRET if value_secrecy == Secrecy.SECRET else result_secrecy
@@ -661,33 +832,33 @@ def eval_node(
         # choice, which branch_pc_trust/branch_pc_secrecy already
         # covers.
         test_value, test_trust, test_secrecy = eval_node(
-            node.test, allowed, env, caps, pc_trust, pc_secrecy
+            node.test, allowed, env, caps, pc_trust, pc_secrecy, functions
         )
         branch_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
         branch_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or test_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
         chosen = node.body if test_value else node.orelse
-        return eval_node(chosen, allowed, env, caps, branch_pc_trust, branch_pc_secrecy)
+        return eval_node(chosen, allowed, env, caps, branch_pc_trust, branch_pc_secrecy, functions)
     if isinstance(node, ast.UnaryOp):
         op_type = type(node.op)
         if op_type not in _UNARY_OPS:
             raise InterpreterError(f"unsupported unary operator: {op_type.__name__}")
         operand, operand_trust, operand_secrecy = eval_node(
-            node.operand, allowed, env, caps, pc_trust, pc_secrecy
+            node.operand, allowed, env, caps, pc_trust, pc_secrecy, functions
         )
         return _UNARY_OPS[op_type](operand), operand_trust, operand_secrecy
     if isinstance(node, ast.BinOp):
         op_type = type(node.op)
         if op_type not in _BINOP_OPS:
             raise InterpreterError(f"unsupported arithmetic operator: {op_type.__name__}")
-        left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy)
-        right, right_trust, right_secrecy = eval_node(node.right, allowed, env, caps, pc_trust, pc_secrecy)
+        left, left_trust, left_secrecy = eval_node(node.left, allowed, env, caps, pc_trust, pc_secrecy, functions)
+        right, right_trust, right_secrecy = eval_node(node.right, allowed, env, caps, pc_trust, pc_secrecy, functions)
         if op_type is ast.Pow and isinstance(right, (int, float)) and abs(right) > MAX_EXPONENT:
             raise InterpreterError(f"exponent magnitude exceeds {MAX_EXPONENT}")
         binop_trust = Trust.UNTRUSTED if Trust.UNTRUSTED in (left_trust, right_trust) else Trust.TRUSTED
         binop_secrecy = Secrecy.SECRET if Secrecy.SECRET in (left_secrecy, right_secrecy) else Secrecy.PUBLIC
         return _BINOP_OPS[op_type](left, right), binop_trust, binop_secrecy
     if isinstance(node, ast.List):
-        elements = [eval_node(e, allowed, env, caps, pc_trust, pc_secrecy) for e in node.elts]
+        elements = [eval_node(e, allowed, env, caps, pc_trust, pc_secrecy, functions) for e in node.elts]
         list_trust = Trust.UNTRUSTED if any(t == Trust.UNTRUSTED for _, t, _ in elements) else Trust.TRUSTED
         list_secrecy = Secrecy.SECRET if any(s == Secrecy.SECRET for _, _, s in elements) else Secrecy.PUBLIC
         return elements, list_trust, list_secrecy
@@ -696,8 +867,8 @@ def eval_node(
             raise InterpreterError("dict unpacking (**) is not supported")
         entries = []
         for key_node, value_node in zip(node.keys, node.values):
-            key, key_trust, key_secrecy = eval_node(key_node, allowed, env, caps, pc_trust, pc_secrecy)
-            value_result = eval_node(value_node, allowed, env, caps, pc_trust, pc_secrecy)
+            key, key_trust, key_secrecy = eval_node(key_node, allowed, env, caps, pc_trust, pc_secrecy, functions)
+            value_result = eval_node(value_node, allowed, env, caps, pc_trust, pc_secrecy, functions)
             entries.append((key, key_trust, key_secrecy, value_result))
         # Each entry stores (value, value_trust, value_secrecy,
         # key_trust, key_secrecy) -- the key itself stays the bare raw
@@ -723,8 +894,8 @@ def eval_node(
     if isinstance(node, ast.Subscript):
         if not isinstance(node.ctx, ast.Load):
             raise InterpreterError(f"unsupported subscript usage: {ast.dump(node)}")
-        container, _, _ = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
-        index, _, _ = eval_node(node.slice, allowed, env, caps, pc_trust, pc_secrecy)
+        container, _, _ = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
+        index, _, _ = eval_node(node.slice, allowed, env, caps, pc_trust, pc_secrecy, functions)
         if _is_tagged_list(container):
             if not isinstance(index, int) or isinstance(index, bool):
                 raise InterpreterError("list index must be an integer")
@@ -783,7 +954,7 @@ def eval_node(
         # just for dunder names, but one this project's own tools
         # (plain data classes and pydantic models) don't actually
         # exercise today.
-        obj, trust, secrecy = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
+        obj, trust, secrecy = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
         if node.attr.startswith("_"):
             raise InterpreterError(f"attribute access to {node.attr!r} is not allowed")
         try:
@@ -806,6 +977,7 @@ def exec_stmt(
     pc_trust: Trust = Trust.TRUSTED,
     pc_secrecy: Secrecy = Secrecy.PUBLIC,
     budget: _IterationBudget | None = None,
+    functions: "_FunctionRegistry | None" = None,
 ) -> tuple[Any, Trust, Secrecy] | None:
     """Executes a single statement node: an assignment, a conditional, a
     while loop, a for loop, or an expression statement. Returns
@@ -819,18 +991,18 @@ def exec_stmt(
     if isinstance(node, ast.Assign):
         if len(node.targets) != 1 or not isinstance(node.targets[0], ast.Name):
             raise InterpreterError("assignment must have a single plain-name target")
-        env[node.targets[0].id] = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
+        env[node.targets[0].id] = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
         return None
     if isinstance(node, ast.If):
         test_value, test_trust, test_secrecy = eval_node(
-            node.test, allowed, env, caps, pc_trust, pc_secrecy
+            node.test, allowed, env, caps, pc_trust, pc_secrecy, functions
         )
         branch_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
         branch_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or test_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
         branch = node.body if test_value else node.orelse
         result = None
         for stmt in branch:
-            result = exec_stmt(stmt, allowed, env, caps, branch_pc_trust, branch_pc_secrecy, budget)
+            result = exec_stmt(stmt, allowed, env, caps, branch_pc_trust, branch_pc_secrecy, budget, functions)
         return result
     if isinstance(node, ast.While):
         if node.orelse:
@@ -838,7 +1010,7 @@ def exec_stmt(
         result = None
         iterations = 0
         test_value, test_trust, test_secrecy = eval_node(
-            node.test, allowed, env, caps, pc_trust, pc_secrecy
+            node.test, allowed, env, caps, pc_trust, pc_secrecy, functions
         )
         while test_value:
             iterations += 1
@@ -851,9 +1023,9 @@ def exec_stmt(
             body_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
             body_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or test_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, caps, body_pc_trust, body_pc_secrecy, budget)
+                result = exec_stmt(stmt, allowed, env, caps, body_pc_trust, body_pc_secrecy, budget, functions)
             test_value, test_trust, test_secrecy = eval_node(
-                node.test, allowed, env, caps, pc_trust, pc_secrecy
+                node.test, allowed, env, caps, pc_trust, pc_secrecy, functions
             )
         return result
     if isinstance(node, ast.For):
@@ -862,7 +1034,7 @@ def exec_stmt(
         if not isinstance(node.target, ast.Name):
             raise InterpreterError("for loop target must be a single plain name")
         iterable, iterable_trust, iterable_secrecy = eval_node(
-            node.iter, allowed, env, caps, pc_trust, pc_secrecy
+            node.iter, allowed, env, caps, pc_trust, pc_secrecy, functions
         )
         if _is_tagged_list(iterable):
             tagged = iterable
@@ -890,10 +1062,42 @@ def exec_stmt(
                 budget.consume()
             env[node.target.id] = element
             for stmt in node.body:
-                result = exec_stmt(stmt, allowed, env, caps, body_pc_trust, body_pc_secrecy, budget)
+                result = exec_stmt(stmt, allowed, env, caps, body_pc_trust, body_pc_secrecy, budget, functions)
         return result
     if isinstance(node, ast.Expr):
-        return eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy)
+        return eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
+    if isinstance(node, ast.FunctionDef):
+        # `def name(params): body` -- deliberately restricted to the
+        # smallest useful shape: plain positional parameters only, no
+        # defaults, no *args/**kwargs, no keyword-only parameters, no
+        # decorators, no return-type annotation, and no `return`
+        # statement at all -- a function's result is whatever its last
+        # statement evaluates to, the exact same convention run() and
+        # run_turn() already use at the top level, and if/while/for
+        # bodies use for their own value. Reusing that convention
+        # instead of adding real `return` semantics avoids building a
+        # whole new control-flow-unwinding mechanism this interpreter
+        # has never needed before.
+        if node.decorator_list:
+            raise InterpreterError("function decorators are not supported")
+        if node.returns is not None:
+            raise InterpreterError("function return type annotations are not supported")
+        args = node.args
+        if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs or args.defaults or args.kw_defaults:
+            raise InterpreterError(
+                "function definitions only support plain positional "
+                "parameters -- no *args, **kwargs, keyword-only "
+                "parameters, or default values"
+            )
+        if node.name in allowed:
+            raise InterpreterError(
+                f"cannot define a function named {node.name!r} -- it "
+                "collides with a whitelisted name"
+            )
+        if functions is None:
+            raise InterpreterError("function definitions are not supported in this context")
+        functions.defs[node.name] = node
+        return None
     raise InterpreterError(f"unsupported statement: {ast.dump(node)}")
 
 
@@ -931,9 +1135,10 @@ def run(
         env = {}
     caps = _Capabilities(sources, privileged, sanitizers, confidential, sinks, declassifiers)
     budget = _IterationBudget(MAX_TOTAL_ITERATIONS)
+    functions = _FunctionRegistry(budget)
     result = None
     for stmt in tree.body:
-        result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, Secrecy.PUBLIC, budget)
+        result = exec_stmt(stmt, allowed, env, caps, Trust.TRUSTED, Secrecy.PUBLIC, budget, functions)
     return unwrap_value(result[0]) if result is not None else None
 
 
@@ -951,6 +1156,7 @@ class Session:
     def __init__(self, budget_limit: int = MAX_TOTAL_ITERATIONS):
         self.env: dict[str, tuple[Any, Trust, Secrecy]] = {}
         self.budget = _IterationBudget(budget_limit)
+        self.functions = _FunctionRegistry(self.budget)
 
 
 def run_turn(
@@ -988,6 +1194,7 @@ def run_turn(
         )
     caps = _Capabilities(sources, privileged, sanitizers, confidential, sinks, declassifiers)
     result = exec_stmt(
-        tree.body[0], allowed, session.env, caps, Trust.TRUSTED, Secrecy.PUBLIC, session.budget
+        tree.body[0], allowed, session.env, caps, Trust.TRUSTED, Secrecy.PUBLIC,
+        session.budget, session.functions,
     )
     return unwrap_value(result[0]) if result is not None else None

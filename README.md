@@ -746,9 +746,9 @@ genuine, current limitation, not a hidden strength:
   with its own argument parser, rather than one coherent tool the way
   `agentdojo/scripts/benchmark.py` is.
 - **Narrower by design, not by oversight, on the language side.** No
-  function definitions, no exception handling, no string slicing/
-  indexing, no built-in functions beyond whatever a task explicitly
-  whitelists. Three things listed here as gaps earlier are closed:
+  exception handling, no string slicing/indexing, no built-in functions
+  beyond whatever a task explicitly whitelists. Four things listed here
+  as gaps earlier are closed:
   attribute access (`transaction.amount`) was added once it was
   verified there's no path from an attribute read back to a callable
   whitelisted name; dict iteration (`for key in some_dict:`) was added
@@ -769,7 +769,22 @@ genuine, current limitation, not a hidden strength:
   AST node pc_trust was never threaded through), verified the same way
   — the new security test's own detection power confirmed by mutation
   before trusting it — and the originally-failing statement now
-  actually runs. The remaining gaps above are the ones still real.
+  actually runs. Function definitions (`def name(params): body`) were
+  the biggest single addition — deliberately the smallest useful shape,
+  not full Python: positional parameters only, no return statement at
+  all (a function's result is its last statement's value, reusing the
+  same convention `run()` itself already uses, not a new control-flow
+  mechanism), a fresh isolated scope per call with no closures, and
+  recursion refused outright rather than depth-limited, since loops
+  already share a budget that extends into function bodies for free
+  but nothing bounds Python's own call-stack depth. The one genuinely
+  new security question — does a function call need the same pc_trust
+  inheritance `ast.If` already has, so a privileged call can't hide
+  inside a function body reached only through an untrusted branch —
+  was worked through before writing any code, and both new mechanisms
+  (the pc_trust inheritance and the recursion guard) had their tests'
+  detection power confirmed by mutation before being trusted. The
+  remaining gaps above are the ones still real.
   This is the one piece of narrowness that's actually load-bearing for
   the security claim, not a gap to close — see the README's own
   argument for why growing this deliberately trades away the property
