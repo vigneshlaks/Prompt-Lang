@@ -32,6 +32,23 @@ hand when this was built: an unrelated entry's freshly-read untrusted
 value must not leak onto a different, individually-clean key's own tag
 when both live in the same dict.
 
+User-defined functions got the same treatment once function
+definitions were added to the interpreter. Every generated program now
+opens with three fixed `def` statements (a passthrough identity
+function, and two zero-argument wrappers that each call the raw
+privileged/sink action with no arguments of their own). A "func_wrap"
+hop threads the tracked variable through the identity function
+mid-chain, the same regression shape as the existing "ordinary" hop
+but through a user-defined call+return instead of a whitelisted one.
+More importantly, a new "func_branch" gate calls the zero-argument
+wrapper from inside the same branch shape the existing "eq_branch"
+gate already uses -- since the wrapper itself takes no arguments, the
+*only* way it could ever be blocked is via pc_trust inherited from the
+branch condition into the function body, exactly the property that was
+hand-verified and mutation-tested when function definitions were
+built. This searches that property at random volume across many chain
+shapes instead of the handful of hand-written cases.
+
 Fixed seed for reproducibility: a failure here should be a real,
 replayable finding, not a flake.
 """
@@ -81,13 +98,25 @@ CAPS = dict(
     declassifiers=frozenset({"declassify"}),
 )
 
+# Prepended to every generated program. identity_func is a plain
+# passthrough for the "func_wrap" hop. call_privileged/call_sink take
+# no arguments of their own -- the only way a branch that calls one of
+# them could ever be blocked is via pc_trust inherited from the
+# branch's own condition into the function body, which is exactly the
+# property the "func_branch" gate below is checking at random volume.
+FUNC_DEFS = (
+    "def identity_func(x):\n    x\n"
+    "def call_privileged():\n    privileged_action()\n"
+    "def call_sink():\n    sink_action()"
+)
+
 
 def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
     """Returns (program, expect_capability_error, expect_confidentiality_error).
     Ground truth (untrusted / secret) is tracked in Python variables as
     the generator builds each statement, independently of anything the
     interpreter computes."""
-    stmts = []
+    stmts = [FUNC_DEFS]
     var = "x"
     untrusted = rng.choice([True, False])
     secret = rng.choice([True, False])
@@ -106,6 +135,7 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             "ordinary", "sanitize", "declassify", "listwrap",
             "mix_untrusted", "mix_secret",
             "dictwrap", "dict_key_roundtrip", "dict_key_no_cross_contamination",
+            "func_wrap",
         ])
         if hop == "ordinary":
             stmts.append(f"{var} = ordinary({var})")
@@ -150,17 +180,25 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
                 f'_poison = {{{var}: trusted_val(), "__poison_marker__": mix(trusted_val(), read_untrusted())}}\n'
                 f"for _pk in _poison:\n    if _pk == {var}:\n        {var} = _pk"
             )
+        elif hop == "func_wrap":
+            # Passthrough hop shaped like "ordinary", but through a
+            # user-defined call+return instead of a whitelisted
+            # function -- ground truth unchanged if trust/secrecy
+            # survive a normal function call round trip.
+            stmts.append(f"{var} = identity_func({var})")
 
     action = rng.choice(["privileged", "sink"])
-    gate = rng.choice(["direct", "eq_branch", "in_branch"])
+    gate = rng.choice(["direct", "eq_branch", "in_branch", "func_branch"])
 
     if action == "privileged":
         if gate == "direct":
             stmts.append(f"privileged_action({var})")
         elif gate == "eq_branch":
             stmts.append(f"if {var} == {var}:\n    privileged_action()")
-        else:
+        elif gate == "in_branch":
             stmts.append(f"if {var} in [{var}]:\n    privileged_action()")
+        else:
+            stmts.append(f"if {var} == {var}:\n    call_privileged()")
         expect_cap_error = untrusted
         expect_conf_error = False
     else:
@@ -168,8 +206,10 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             stmts.append(f"sink_action({var})")
         elif gate == "eq_branch":
             stmts.append(f"if {var} == {var}:\n    sink_action()")
-        else:
+        elif gate == "in_branch":
             stmts.append(f"if {var} in [{var}]:\n    sink_action()")
+        else:
+            stmts.append(f"if {var} == {var}:\n    call_sink()")
         expect_cap_error = False
         expect_conf_error = secret
 
