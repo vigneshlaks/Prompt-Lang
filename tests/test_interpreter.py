@@ -2542,3 +2542,136 @@ def test_sink_call_blocked_behind_a_secret_attribute_read_branch_condition():
             confidential=frozenset({"read_api_key"}),
             sinks=frozenset({"leak"}),
         )
+
+
+def test_ternary_picks_the_true_branch():
+    result = run("5 if True else 10", {})
+    assert result == 5
+
+
+def test_ternary_picks_the_false_branch():
+    result = run("5 if False else 10", {})
+    assert result == 10
+
+
+def test_ternary_is_lazy_the_unchosen_branch_never_executes():
+    def blow_up():
+        raise AssertionError("unchosen branch must not be evaluated")
+
+    result = run("1 if True else blow_up()", {"blow_up": blow_up})
+    assert result == 1
+
+
+def test_ternary_result_from_the_chosen_branch_keeps_its_own_trust():
+    def read_secret():
+        return "untrusted"
+
+    def blocked(x=None):
+        raise AssertionError("should not run")
+
+    with pytest.raises(CapabilityError):
+        run(
+            "x = read_secret() if True else 1\nblocked(x)",
+            {"read_secret": read_secret, "blocked": blocked},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"blocked"}),
+        )
+
+
+def test_privileged_call_blocked_behind_an_untrusted_ternary_test():
+    # The actual security question this addition raises: a privileged
+    # call hiding inside a ternary branch, gated by an untrusted test,
+    # must be caught the same way ast.If's own pc_trust already catches
+    # it for the statement form -- ast.IfExp is a different node and
+    # was never covered by that just because ast.If exists.
+    def read_secret():
+        return "untrusted"
+
+    def blocked(x=None):
+        raise AssertionError("should not run")
+
+    with pytest.raises(CapabilityError):
+        run(
+            'x = read_secret()\nblocked() if x == "untrusted" else None',
+            {"read_secret": read_secret, "blocked": blocked},
+            sources=frozenset({"read_secret"}),
+            privileged=frozenset({"blocked"}),
+        )
+
+
+def test_sink_call_blocked_behind_a_secret_ternary_test():
+    def read_api_key():
+        return "sk-secret"
+
+    def leak(x=None):
+        raise AssertionError("should not run")
+
+    with pytest.raises(ConfidentialityError):
+        run(
+            'x = read_api_key()\nleak() if x == "sk-secret" else None',
+            {"read_api_key": read_api_key, "leak": leak},
+            confidential=frozenset({"read_api_key"}),
+            sinks=frozenset({"leak"}),
+        )
+
+
+def test_privileged_call_in_the_unchosen_ternary_branch_is_never_reached_so_never_blocked():
+    # Mirrors the lazy-evaluation guarantee: a privileged call sitting
+    # in the branch that ISN'T taken must not raise at all, since it
+    # never actually runs -- confirms blocking is about reachability,
+    # not just syntactic presence in the source. Uses a trusted literal
+    # test so this is cleanly about laziness alone, not entangled with
+    # pc_trust gating a branch that actually gets reached (covered
+    # separately above).
+    calls = []
+
+    def approve(x=None):
+        calls.append("ran")
+        return "should not run"
+
+    result = run(
+        "approve() if False else 2",
+        {"approve": approve},
+        privileged=frozenset({"approve"}),
+    )
+    assert result == 2
+    assert calls == []
+
+
+def test_ternary_does_not_retroactively_taint_a_value_chosen_via_an_untrusted_test():
+    # Consistency with ast.If's own documented choice: picking between
+    # two already-safe values based on an untrusted condition doesn't
+    # itself taint the result -- matches ast.If not retroactively
+    # tainting a plain assignment made inside a branch.
+    def read_secret():
+        return "untrusted"
+
+    def approve(x=None):
+        return "ok"
+
+    result = run(
+        'x = read_secret()\ny = "safe1" if x == "untrusted" else "safe2"\napprove(y)',
+        {"read_secret": read_secret, "approve": approve},
+        sources=frozenset({"read_secret"}),
+        privileged=frozenset({"approve"}),
+    )
+    assert result == "ok"
+
+
+def test_ternary_composes_as_a_call_argument():
+    def report(x):
+        return x
+
+    result = run('report(1 if True else 2)', {"report": report})
+    assert result == 1
+
+
+def test_ternary_test_condition_evaluates_only_once():
+    calls = []
+
+    def check():
+        calls.append("checked")
+        return True
+
+    run("1 if check() else 2", {"check": check})
+    assert calls == ["checked"]

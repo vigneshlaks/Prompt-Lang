@@ -748,18 +748,28 @@ genuine, current limitation, not a hidden strength:
 - **Narrower by design, not by oversight, on the language side.** No
   function definitions, no exception handling, no string slicing/
   indexing, no built-in functions beyond whatever a task explicitly
-  whitelists. Two things listed here as gaps earlier are closed:
+  whitelists. Three things listed here as gaps earlier are closed:
   attribute access (`transaction.amount`) was added once it was
   verified there's no path from an attribute read back to a callable
-  whitelisted name, and dict iteration (`for key in some_dict:`) was
-  added properly — each dict entry carries a 5-tuple with the key's own
+  whitelisted name; dict iteration (`for key in some_dict:`) was added
+  properly — each dict entry carries a 5-tuple with the key's own
   trust/secrecy alongside the value's, not one blunt tag for the whole
   dict, so an untrusted value in one entry doesn't drag an unrelated,
-  individually-safe key down with it. Now covered by the fuzzer too —
-  three new hop types, with its own detection power reverified by
-  deliberately reintroducing the aggregate-tag shortcut and confirming
-  a real failing case before restoring the real implementation — the
-  remaining gaps above are the ones still real.
+  individually-safe key down with it, now covered by the fuzzer too,
+  three new hop types with detection power reverified by deliberately
+  reintroducing the aggregate-tag shortcut and confirming a real
+  failing case before restoring the real implementation; and ternary
+  expressions (`x if cond else y`) were added, motivated by a real
+  live transcript — a model naturally wrote one on a real task, got
+  rejected, fell back to a two-statement version the turn-by-turn
+  harness's own one-statement-per-turn rule also rejected, and got
+  stuck repeating it. `ast.IfExp` needed the exact same implicit-flow
+  protection `ast.If` already has (a privileged call could otherwise
+  hide inside a branch gated by an untrusted test, through a different
+  AST node pc_trust was never threaded through), verified the same way
+  — the new security test's own detection power confirmed by mutation
+  before trusting it — and the originally-failing statement now
+  actually runs. The remaining gaps above are the ones still real.
   This is the one piece of narrowness that's actually load-bearing for
   the security claim, not a gap to close — see the README's own
   argument for why growing this deliberately trades away the property

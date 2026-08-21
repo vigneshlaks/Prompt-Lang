@@ -21,7 +21,7 @@ Toy grammar supported so far (informal EBNF):
     for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
     expr       := call | compare | arith | boolean | unary | subscript
-                  | attribute | list_expr | dict_expr | NAME | literal
+                  | attribute | list_expr | dict_expr | ternary | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
     compare    := expr (("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in") expr)+
     arith      := expr ("+" | "-" | "*" | "/" | "//" | "%" | "**") expr
@@ -31,6 +31,7 @@ Toy grammar supported so far (informal EBNF):
     attribute  := expr "." NAME
     list_expr  := "[" (expr ("," expr)*)? "]"
     dict_expr  := "{" (expr ":" expr ("," expr ":" expr)*)? "}"
+    ternary    := expr "if" expr "else" expr
     literal    := NUMBER | STRING | "True" | "False" | "None"
 
 Two separate namespaces: `allowed` (whitelisted callables, checked at call
@@ -632,6 +633,40 @@ def eval_node(
             if op_type is ast.Or and result:
                 break
         return result, result_trust, result_secrecy
+    if isinstance(node, ast.IfExp):
+        # Ternary (`body if test else orelse`) -- the expression-level
+        # twin of ast.If's own implicit-flow protection, deliberately
+        # not skipped: a privileged/sink call could otherwise hide
+        # inside a branch, gated by an untrusted test, invisible to any
+        # check that only inspects arguments -- exactly the class of
+        # bug pc_trust/pc_secrecy already exist to close for the
+        # statement form (`send_to_attacker()` running with zero
+        # errors purely because untrusted content picked the branch).
+        # ast.IfExp is a different AST node from ast.If and was never
+        # covered by that protection just by ast.If existing -- this
+        # mirrors its branch_pc_trust/branch_pc_secrecy elevation
+        # exactly, applied to whichever single branch actually gets
+        # evaluated (lazily, matching real Python ternary semantics and
+        # this interpreter's existing BoolOp short-circuit behavior --
+        # the unchosen branch's side effects, including any call in
+        # it, must never run).
+        #
+        # The chosen branch's own returned trust/secrecy is NOT
+        # additionally forced untrusted/secret by the test's own tag --
+        # consistent with ast.If's own documented choice not to
+        # retroactively taint a plain assignment made inside a branch.
+        # Picking between two already-safe values based on an untrusted
+        # condition doesn't itself leak anything; what has to be
+        # stopped is a privileged/sink call reachable only through that
+        # choice, which branch_pc_trust/branch_pc_secrecy already
+        # covers.
+        test_value, test_trust, test_secrecy = eval_node(
+            node.test, allowed, env, caps, pc_trust, pc_secrecy
+        )
+        branch_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or test_trust == Trust.UNTRUSTED else Trust.TRUSTED
+        branch_pc_secrecy = Secrecy.SECRET if pc_secrecy == Secrecy.SECRET or test_secrecy == Secrecy.SECRET else Secrecy.PUBLIC
+        chosen = node.body if test_value else node.orelse
+        return eval_node(chosen, allowed, env, caps, branch_pc_trust, branch_pc_secrecy)
     if isinstance(node, ast.UnaryOp):
         op_type = type(node.op)
         if op_type not in _UNARY_OPS:
