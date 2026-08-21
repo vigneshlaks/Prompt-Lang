@@ -747,7 +747,13 @@ genuine, current limitation, not a hidden strength:
   `agentdojo/scripts/benchmark.py` is.
 - **Narrower by design, not by oversight, on the language side.** No
   exception handling, no string slicing/indexing, no built-in functions
-  beyond whatever a task explicitly whitelists. Four things listed here
+  beyond whatever a task explicitly whitelists. A small, curated
+  whitelist of string *methods* (`startswith`, `endswith`, `strip`,
+  `lower`/`upper`, `replace`, `split`, `find`, `count`) is now
+  supported, deliberately separate from slicing/indexing (still
+  unsupported) and from built-in *functions* (`sum()`/`len()` still
+  raise `unknown or disallowed name`) -- a real gap closed, not the
+  same gap as either of those two. Four things listed here
   as gaps earlier are closed:
   attribute access (`transaction.amount`) was added once it was
   verified there's no path from an attribute read back to a callable

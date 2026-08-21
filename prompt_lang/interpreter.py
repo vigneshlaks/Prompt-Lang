@@ -21,9 +21,11 @@ Toy grammar supported so far (informal EBNF):
     while_stmt := "while" expr ":" NEWLINE INDENT statement+ DEDENT
     for_stmt   := "for" NAME "in" expr ":" NEWLINE INDENT statement+ DEDENT
     expr_stmt  := expr
-    expr       := call | compare | arith | boolean | unary | subscript
-                  | attribute | list_expr | dict_expr | ternary | NAME | literal
+    expr       := call | method_call | compare | arith | boolean | unary
+                  | subscript | attribute | list_expr | dict_expr | ternary
+                  | NAME | literal
     call       := NAME "(" (expr ("," expr)*)? ")"
+    method_call := expr "." NAME "(" (expr ("," expr)*)? ")"
     compare    := expr (("==" | "!=" | "<" | "<=" | ">" | ">=" | "in" | "not in") expr)+
     arith      := expr ("+" | "-" | "*" | "/" | "//" | "%" | "**") expr
     boolean    := expr ("and" | "or") expr
@@ -34,6 +36,11 @@ Toy grammar supported so far (informal EBNF):
     dict_expr  := "{" (expr ":" expr ("," expr ":" expr)*)? "}"
     ternary    := expr "if" expr "else" expr
     literal    := NUMBER | STRING | "True" | "False" | "None"
+
+Note: method_call is only ever valid when expr evaluates to a string, and
+only for the fixed whitelist in _STRING_METHODS -- this is a runtime check,
+not something the EBNF above enforces statically, the same way "list index
+must be an integer" is runtime-checked rather than grammar-checked.
 
 Two separate namespaces: `allowed` (whitelisted callables, checked at call
 sites only) and `env` (variables bound by assignment, checked at name-read
@@ -313,6 +320,31 @@ _BINOP_OPS: dict[type, Callable[[Any, Any], Any]] = {
     ast.Pow: operator.pow,
 }
 
+_STRING_METHODS: frozenset[str] = frozenset({
+    "startswith", "endswith",
+    "strip", "lstrip", "rstrip",
+    "lower", "upper",
+    "replace", "split", "find", "count",
+})
+# Deliberately excluded, not just not-yet-added:
+#   format/format_map -- format-string injection risk (a format spec can
+#   reach into an object's own attributes, e.g. "{0.__class__}", the
+#   exact kind of attribute-chain exposure ast.Attribute's own dunder
+#   check exists to block elsewhere in this file).
+#   encode/decode -- this language has no bytes type in its value model
+#   at all; there is nothing for the result to mean.
+#   join -- operates on an iterable *argument* whose own elements would
+#   each need their own trust/secrecy considered individually, the same
+#   care list/dict literals already get; every method actually in this
+#   whitelist takes only plain string/int arguments, so this is a real
+#   scope difference, not an oversight.
+#   No regex-based method is included at all -- unlike the fixed set
+#   above, a regex is untrusted-content-shaped input in its own right
+#   (catastrophic backtracking is a real, well-known resource-exhaustion
+#   vector), a different class of problem MAX_WHILE_ITERATIONS/
+#   MAX_EXPONENT exist to bound for other constructs, not solved by
+#   reusing either of them.
+
 _UNARY_OPS: dict[type, Callable[[Any], Any]] = {
     ast.USub: operator.neg,
     ast.UAdd: operator.pos,
@@ -521,6 +553,72 @@ def _call_user_function(
     return result if result is not None else (None, Trust.TRUSTED, Secrecy.PUBLIC)
 
 
+def _call_string_method(
+    node: ast.Call,
+    allowed: dict[str, Callable],
+    env: dict[str, tuple[Any, Trust, Secrecy]],
+    caps: "_Capabilities",
+    pc_trust: Trust,
+    pc_secrecy: Secrecy,
+    functions: "_FunctionRegistry | None",
+) -> tuple[Any, Trust, Secrecy]:
+    """Calls a whitelisted method (`_STRING_METHODS`) on a string value --
+    `transaction.date.startswith("2022-03")`, found necessary live: a
+    model naturally reached for this, and had no way to express it,
+    falling back to a chained comparison instead in one transcript and
+    simply failing in another. Deliberately scoped to strings only, not
+    "any method on any object": a whitelisted-function call is gated by
+    `allowed`/`caps`, but a real returned object (e.g. an AgentDojo
+    Transaction) can carry arbitrary methods with arbitrary side
+    effects that were never audited the way `allowed` entries are --
+    `isinstance(obj, str)` below is the actual security boundary, not
+    an incidental type check. It also can't reach a *tagged* list or
+    dict: those are plain Python lists/dicts internally, and calling a
+    mutating method on one (`.append`, `.update`) would corrupt this
+    interpreter's own tagged-triple/5-tuple invariant directly -- ruled
+    out for free by the same isinstance check, not by a separate guard.
+
+    No pc_trust/pc_secrecy inheritance concern here, unlike function
+    calls: every whitelisted string method is a pure, side-effect-free
+    transformation with no access to `allowed`/`caps` at all (real
+    Python `str` methods, not something a program defines), so there is
+    no way for one to contain a privileged/sink call the way a
+    user-defined function body could -- nothing to gate. Result
+    trust/secrecy simply combines the receiver's and every argument's
+    tags, the same rule already used for ast.BinOp/ast.Compare."""
+    method_name = node.func.attr
+    obj, obj_trust, obj_secrecy = eval_node(node.func.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
+    if not isinstance(obj, str):
+        raise InterpreterError(
+            f"method calls are only supported on strings, got {type(obj).__name__!r}"
+        )
+    if method_name not in _STRING_METHODS:
+        raise InterpreterError(f"unsupported string method: {method_name!r}")
+    if node.keywords:
+        raise InterpreterError(f"{method_name}() does not accept keyword arguments")
+    arg_results = [
+        eval_node(a, allowed, env, caps, pc_trust, pc_secrecy, functions) for a in node.args
+    ]
+    result_trust = (
+        Trust.UNTRUSTED
+        if obj_trust == Trust.UNTRUSTED or any(t == Trust.UNTRUSTED for _, t, _ in arg_results)
+        else Trust.TRUSTED
+    )
+    result_secrecy = (
+        Secrecy.SECRET
+        if obj_secrecy == Secrecy.SECRET or any(s == Secrecy.SECRET for _, _, s in arg_results)
+        else Secrecy.PUBLIC
+    )
+    args = [unwrap_value(v) for v, _, _ in arg_results]
+    try:
+        result = getattr(obj, method_name)(*args)
+    except (TypeError, ValueError) as exc:
+        raise InterpreterError(f"{method_name}() failed: {exc}") from exc
+    if isinstance(result, list):
+        result = [(item, result_trust, result_secrecy) for item in result]
+    return result, result_trust, result_secrecy
+
+
 def _is_tagged_list(value: Any) -> bool:
     """True if value is already shaped like a list this interpreter
     builds: a list of (value, Trust, Secrecy) triples. An empty list
@@ -665,6 +763,8 @@ def eval_node(
     privileged call made under it is refused regardless of its own
     arguments; a SECRET pc_secrecy does the same for sink calls."""
     if isinstance(node, ast.Call):
+        if isinstance(node.func, ast.Attribute):
+            return _call_string_method(node, allowed, env, caps, pc_trust, pc_secrecy, functions)
         if not isinstance(node.func, ast.Name):
             raise InterpreterError("calls must be a plain function name")
         name = node.func.id
