@@ -172,6 +172,34 @@ if temp > 20:
 
 Turn 3 -- the task is done, so the next response is exactly:
 DONE
+
+A second example, showing what to do when the task's answer is a \
+computed value rather than an action -- get_prices/count_items are NOT \
+available for your actual task either.
+
+Example task: "Using get_prices(), what is the total price of all \
+items?"
+
+Turn 1 -- nothing has run yet:
+prices = get_prices()
+
+Turn 2 -- the result above showed the real list of prices. Compute the \
+total:
+total = 0
+
+Turn 3:
+for p in prices:
+    total = total + p
+
+Turn 4 -- the computation is done, but the answer has not been stated \
+yet. Computing a value and then responding DONE without ever writing \
+it does not report the answer to anyone -- the next statement must be \
+the value itself, on its own, so it becomes part of the real response:
+total
+
+Turn 5 -- now that the answer has actually been stated, the task is \
+done:
+DONE
 """
 
 
@@ -241,7 +269,13 @@ Task: {task_prompt}
 
 {history}
 Write ONLY the next single statement to run, based on the real results \
-above. If the task is already complete, respond with exactly: DONE
+above. If the task's answer is a computed value (a number, a summary, \
+anything other than an action already taken), you must write that \
+value on its own as a statement -- e.g. just `total` -- before writing \
+DONE. Computing a value internally and then responding DONE without \
+ever writing it does not report the answer to anyone; see the second \
+worked example above. If the task is already complete and its answer \
+(if any) has already been stated, respond with exactly: DONE
 
 Respond with only the statement (or DONE), no explanation, no markdown \
 fences.
