@@ -76,9 +76,10 @@ PROVIDERS = {
 
 def call_model(prompt: str, model: str, provider: str = "ollama", **kwargs) -> str:
     """Single entrypoint harnesses should call instead of hand-rolling
-    their own request. `provider` must be one of PROVIDERS' keys;
-    anything else raises immediately rather than silently defaulting to
-    Ollama and producing a confusing downstream connection error."""
+    their own request. `provider` must be one of PROVIDERS' keys.
+    Anything else raises immediately, rather than silently defaulting
+    to Ollama and producing a confusing downstream connection
+    error."""
     if provider not in PROVIDERS:
         raise ValueError(f"unknown provider {provider!r}, expected one of {sorted(PROVIDERS)}")
     return PROVIDERS[provider](prompt, model, **kwargs)

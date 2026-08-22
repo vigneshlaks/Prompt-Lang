@@ -18,22 +18,22 @@ def interpret(
     model: str = DEFAULT_INTERPRET_MODEL,
     url: str = OLLAMA_URL,
 ) -> str:
-    """Asks a model to answer `question` using only `text`. Meant to be
-    registered as an ordinary (non-sanitizer) entry in a program's
-    `allowed` dict -- deliberately not a sanitizer, and that's a
-    security-relevant choice, not an oversight. A model reading
-    untrusted text to extract or summarize something is reading the
-    same content an injected instruction could be hiding inside; it is
-    not a trust boundary just because a model did the reading. Left as
-    an ordinary function, the interpreter's existing propagation rule
+    """Asks a model to answer `question` using only `text`. Meant to
+    be registered as an ordinary (non-sanitizer) entry in a program's
+    `allowed` dict. That's deliberate, and it's a security-relevant
+    choice, not an oversight: a model reading untrusted text to
+    extract or summarize something is reading the same content an
+    injected instruction could be hiding inside. It isn't a trust
+    boundary just because a model did the reading. Left as an
+    ordinary function, the interpreter's existing propagation rule
     already keeps the result tagged the same as its input -- untrusted
     text in, untrusted answer out -- with no interpreter change needed
     to make that true.
 
-    `url` defaults to local Ollama but accepts any Ollama-compatible
-    `/api/generate` endpoint, e.g. a rented GPU's exposed URL, so the
-    same function can be pointed at a bigger model without editing this
-    file -- pass `url=my_endpoint` (built the same way
+    `url` defaults to local Ollama, but accepts any Ollama-compatible
+    `/api/generate` endpoint -- e.g. a rented GPU's exposed URL. That
+    means the same function can be pointed at a bigger model without
+    editing this file: pass `url=my_endpoint` (built the same way
     `experiments/turn_by_turn_test.py`'s `_generate_endpoint` does).
     """
     prompt = (
