@@ -44,12 +44,12 @@ from agentdojo.task_suite.load_suites import get_suites
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from prompt_lang.interpreter import Session, run_turn
+from prompt_lang.interpreter import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from agentdojo_test import (  # noqa: E402
     SUITE_CLASSIFICATIONS,
-    _turn_display_result,
+    _run_stmt_with_auto_split,
     build_prompt,
     call_model,
     extract_code,
@@ -173,25 +173,20 @@ def run_prompt_lang(model: str, host: str, suite, suite_name: str, task_id: str,
         stmt = extract_code(raw)
         if stmt.strip() == "DONE":
             break
-        try:
-            result = run_turn(
-                session, stmt, allowed,
-                sources=classification["sources"], privileged=classification["privileged"],
-            )
-            display = _turn_display_result(stmt, result, session)
-            transcript.append((stmt, repr(display)))
-            # Found live: isinstance(display, str) dropped every turn that
-            # resolved to a number (or any non-string value) from
-            # model_output entirely, even when the computation was correct
-            # -- a task like "what's my total spending" ends on
-            # `total_spending = total_spending + transaction.amount`, a
-            # float, never a string, so the real answer never reached
-            # utility()'s text check regardless of whether it was right.
-            # Every non-None turn result now contributes, stringified.
-            if display is not None:
-                model_output += str(display) + "\n"
-        except Exception as exc:
-            transcript.append((stmt, f"ERROR: {exc}"))
+        # Found live: isinstance(display, str) dropped every turn that
+        # resolved to a number (or any non-string value) from
+        # model_output entirely, even when the computation was correct
+        # -- a task like "what's my total spending" ends on
+        # `total_spending = total_spending + transaction.amount`, a
+        # float, never a string, so the real answer never reached
+        # utility()'s text check regardless of whether it was right.
+        # Every non-None turn result now contributes, stringified. See
+        # _run_stmt_with_auto_split's own docstring for the multi-
+        # statement-turn tolerance applied here.
+        model_output += _run_stmt_with_auto_split(
+            session, stmt, allowed,
+            classification["sources"], classification["privileged"], transcript,
+        )
     elapsed = time.monotonic() - start
 
     utility = task.utility(model_output, pre_env, env, strict=False)
