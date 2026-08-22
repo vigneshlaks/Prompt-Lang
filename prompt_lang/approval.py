@@ -1,40 +1,40 @@
 """Human-in-the-loop approval gate for privileged/sinks calls whose
-argument traces back to a value flagged as needing review --
-notes/PRODUCTION_ROADMAP.md items 3 and 12's "coarser human-in-the-loop
-triggering" proposal, built now because of what the live finding
-(README.md / notes/PRODUCTION_ROADMAP.md, 2026-08-19) actually showed:
-neither RetypingGuard (prompt_lang/defenses.py) nor opaque handles
-(prompt_lang/handles.py) catch a value that was corrupted at its
-declassification source -- describe_handle answering a legitimate
-question with the attacker's IBAN -- and then used completely
-correctly afterward, through a normal variable reference. Nothing
-about *how* that value was used was wrong; the value itself was. No
-argument-checking or content-hiding mechanism built so far can see
-that, because there's nothing syntactically or structurally unusual
-about the call. This module doesn't try to be smarter about judging
-the value -- it just refuses to let the system decide alone once a
-value has passed through a channel known to carry this risk.
+argument traces back to a value flagged as needing review. This is
+notes/PRODUCTION_ROADMAP.md items 3 and 12's "coarser
+human-in-the-loop triggering" proposal, built now because of what the
+live finding (README.md / notes/PRODUCTION_ROADMAP.md, 2026-08-19)
+actually showed. Neither RetypingGuard (prompt_lang/defenses.py) nor
+opaque handles (prompt_lang/handles.py) catch a value that was
+corrupted at its declassification source -- describe_handle answering
+a legitimate question with the attacker's IBAN -- and then used
+completely correctly afterward, through a normal variable reference.
+Nothing about *how* that value was used was wrong; the value itself
+was. No argument-checking or content-hiding mechanism built so far can
+see that, because there's nothing syntactically or structurally
+unusual about the call. This module doesn't try to be smarter about
+judging the value. It just refuses to let the system decide alone,
+once a value has passed through a channel known to carry this risk.
 
 Deliberately coarse, matching the roadmap's own framing for this
-proposal: a value gets flagged wherever it's produced by a risky
-channel (describe_handle's answer is the motivating and currently only
-real case), and any privileged/sinks call later reached with that
+proposal. A value gets flagged wherever it's produced by a risky
+channel (describe_handle's answer is the motivating and currently
+only real case). Any privileged/sinks call later reached with that
 value as an argument -- checked by substring match, not just exact
 equality, matching defenses.RetypingGuard's own precedent for erring
-toward more scrutiny rather than less -- is routed through an injected
-`approve` callback before it's allowed to run at all.
+toward more scrutiny rather than less -- is routed through an
+injected `approve` callback before it's allowed to run at all.
 
 Known, named limitation: the gate is composed as the outermost wrap
-around whatever `allowed` it's given (see wrap_for_approval), which
-means it sees exactly the arguments the model wrote, before any Handle
-resolution happens inside a handles.wrap_privileged_for_handles-wrapped
-function. For describe_handle's answer specifically this doesn't
-matter -- that value is always a plain string by the time it's bound to
-a variable, never a Handle -- but a Handle passed directly to a
-privileged call (bypassing describe_handle entirely) would not be
-visible to this gate's matching in its current form, since the gate
-never resolves it. Not fixed here; named so it isn't quietly assumed
-away.
+around whatever `allowed` it's given (see wrap_for_approval). That
+means it sees exactly the arguments the model wrote, before any
+Handle resolution happens inside a
+handles.wrap_privileged_for_handles-wrapped function. For
+describe_handle's answer specifically this doesn't matter -- that
+value is always a plain string by the time it's bound to a variable,
+never a Handle. But a Handle passed directly to a privileged call
+(bypassing describe_handle entirely) would not be visible to this
+gate's matching in its current form, since the gate never resolves
+it. Not fixed here -- named so it isn't quietly assumed away.
 """
 
 from __future__ import annotations
@@ -50,9 +50,9 @@ class ApprovalDenied(Exception):
 
 @dataclass(frozen=True)
 class ApprovalRequest:
-    """What gets handed to the injected approve() callback -- enough
-    for a human (or a test) to decide, without exposing anything the
-    gate itself doesn't already know."""
+    """What gets handed to the injected approve() callback: enough for
+    a human (or a test) to decide, without exposing anything the gate
+    itself doesn't already know."""
 
     call_name: str
     args: tuple[Any, ...]
@@ -65,9 +65,8 @@ class ApprovalGate:
     """Tracks values that require approval before reaching a
     privileged/sinks call, and holds the callback that actually asks.
     One gate per run/session, same scoping convention as RetypingGuard
-    and HandleStore -- never shared across independent runs, since a
-    shared gate would let one task's flagged values gate another's
-    calls."""
+    and HandleStore. Never shared across independent runs -- a shared
+    gate would let one task's flagged values gate another's calls."""
 
     def __init__(self, approve: Callable[[ApprovalRequest], bool]):
         self._flagged: list[tuple[Any, str]] = []
@@ -78,7 +77,7 @@ class ApprovalGate:
         containing it) can reach a privileged/sinks call as an
         argument. Called wherever a value is produced by a channel
         known to carry this risk -- describe_handle's answer, most
-        directly, but nothing here is specific to that function."""
+        directly -- but nothing here is specific to that function."""
         self._flagged.append((value, reason))
 
     def _matches(self, arg: Any) -> list[str]:
@@ -93,9 +92,9 @@ class ApprovalGate:
 
     def check_call(self, call_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
         """Raises ApprovalDenied if any argument matches a flagged
-        value and the approve() callback refuses it. A no-op -- no
-        callback invoked at all -- if nothing matches, so an ordinary
-        call with no flagged content is never interrupted."""
+        value and the approve() callback refuses it. A no-op if
+        nothing matches -- no callback invoked at all -- so an
+        ordinary call with no flagged content is never interrupted."""
         matched_values: list[Any] = []
         matched_reasons: list[str] = []
         for arg in list(args) + list(kwargs.values()):
@@ -125,12 +124,13 @@ def wrap_for_approval(
     sinks: frozenset[str],
     gate: ApprovalGate,
 ) -> dict[str, Callable]:
-    """Returns a new allowed dict, same functions except privileged/
-    sinks entries are routed through gate.check_call() immediately
-    before the real (possibly already handle-wrapped) function runs.
-    Doesn't modify allowed in place, matching
-    defenses.wrap_for_retyping_guard and handles.wrap_privileged_for_handles's
-    own convention. Compose this as the outermost wrap around a
+    """Returns a new allowed dict: same functions, except
+    privileged/sinks entries are routed through gate.check_call()
+    immediately before the real (possibly already handle-wrapped)
+    function runs. Doesn't modify allowed in place, matching
+    defenses.wrap_for_retyping_guard and
+    handles.wrap_privileged_for_handles's own convention. Compose this
+    as the outermost wrap around a
     handles.wrap_for_opaque_handles-wrapped allowed, if using both, so
     a human reviewing a request sees it -- see this module's own
     docstring for what that ordering does and doesn't cover."""
