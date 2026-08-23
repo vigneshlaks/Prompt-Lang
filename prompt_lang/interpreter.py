@@ -7,11 +7,6 @@ uses only ast.parse, dispatch goes only through an explicit whitelist
 of node types and names, and eval() is never called on anything a
 model produced.
 
-For the reasoning behind each design choice below -- what was tried
-first, what broke, what was verified live before being trusted -- see
-notes/DAILY_SUMMARY.md. This docstring states the current rules, not
-their history.
-
 Grammar (informal EBNF):
 
     program    := statement*
