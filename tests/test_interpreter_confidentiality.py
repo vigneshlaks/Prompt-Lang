@@ -149,9 +149,8 @@ def test_sink_call_blocked_inside_a_for_loop_over_a_secret_iterable():
 
 # Adversarial: a sanitizer clears the outer trust tag on whatever it
 # returns, but if it just passes a tagged list through unchanged, the
-# elements inside keep their own tags. Found by deliberately trying to
-# launder untrusted data through a container instead of writing another
-# confirmation test -- see notes/ROADMAP.md item 4.
+# elements inside keep their own tags -- this checks that a container
+# can't launder an untrusted element by clearing just the outer label.
 
 
 def test_sanitizing_a_list_does_not_launder_an_untrusted_element_inside_it():

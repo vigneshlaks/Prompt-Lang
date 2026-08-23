@@ -1,5 +1,5 @@
-"""Property-based fuzzing for the capability/trust/secrecy system --
-item 7 in notes/ROADMAP.md. Every prior adversarial finding (container
+"""Property-based fuzzing for the capability/trust/secrecy system.
+Every prior adversarial finding (container
 laundering, the nested-loop budget bug, both implicit-flow gaps, the
 quote-collision bug) came from one person hand-writing a case that
 happened to hit a real gap. This generalizes that into a search: build

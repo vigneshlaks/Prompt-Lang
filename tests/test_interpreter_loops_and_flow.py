@@ -210,10 +210,10 @@ def test_write_then_read_own_shared_value_still_blocked_from_privileged_op():
         )
 
 
-# Multi-agent semantics (notes/ROADMAP.md item 3): does the tag survive
-# through a second agent's own separate run() call reading, reprocessing,
-# and rewriting shared data -- not just one run() call reading its own
-# write, which is all the tests above cover.
+# Multi-agent semantics: does the tag survive through a second agent's
+# own separate run() call reading, reprocessing, and rewriting shared
+# data -- not just one run() call reading its own write, which is all
+# the tests above cover.
 
 
 def test_tag_survives_a_second_agents_separate_run_reading_the_first_agents_write():

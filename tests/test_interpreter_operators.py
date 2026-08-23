@@ -406,11 +406,12 @@ def test_privileged_call_not_blocked_behind_a_fully_trusted_boolean_condition():
     assert calls == ["approved"]
 
 
-# Over-restriction check (the FIDES comparison from notes/ROADMAP.md): does
-# this system avoid blocking unrelated clean operations just because
-# something untrusted/secret exists elsewhere in the program? Everything
-# tested so far checks the opposite direction -- that bad cases get
-# blocked. These confirm good cases still succeed.
+# Over-restriction check (the same comparison FIDES-style systems get
+# judged on): does this system avoid blocking unrelated clean
+# operations just because something untrusted/secret exists elsewhere
+# in the program? Everything tested so far checks the opposite
+# direction -- that bad cases get blocked. These confirm good cases
+# still succeed.
 
 
 def test_unused_untrusted_variable_does_not_block_an_unrelated_privileged_call():

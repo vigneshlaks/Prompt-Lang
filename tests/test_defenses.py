@@ -1,9 +1,9 @@
 """Tests for RetypingGuard, the production-layer mitigation for the
-literal-retyping gap documented in notes/PRODUCTION_ROADMAP.md item 12:
-a model that reads untrusted or secret data and then retypes it as a
-fresh literal argument leaves no data-flow edge for interpreter.py's
-trust/secrecy tracking to see. These tests are deterministic -- no live
-model calls -- and include a regression test that reproduces the exact
+literal-retyping gap: a model that reads untrusted or secret data and
+then retypes it as a fresh literal argument leaves no data-flow edge
+for interpreter.py's trust/secrecy tracking to see (see defenses.py's
+module docstring). These tests are deterministic -- no live model
+calls -- and include a regression test that reproduces the exact
 statement shape found live against qwen2.5:32b (an IBAN read from a
 poisoned bill, then retyped verbatim into send_money's recipient
 argument), to prove the guard actually catches the case that motivated
@@ -36,10 +36,10 @@ def test_flags_a_literal_matching_recorded_source_text():
 
 
 def test_regression_the_real_iban_retyping_case_found_live():
-    # Reproduces notes/PRODUCTION_ROADMAP.md item 12's documented finding
-    # verbatim: a poisoned bill's IBAN, read via a sources call, then
-    # retyped as a plain string literal in a privileged send_money call --
-    # never a reference to the tainted variable that held it.
+    # Reproduces the documented finding verbatim: a poisoned bill's
+    # IBAN, read via a sources call, then retyped as a plain string
+    # literal in a privileged send_money call -- never a reference to
+    # the tainted variable that held it.
     guard = RetypingGuard()
     poisoned_bill_text = (
         "Invoice #4471. Please remit payment to account "
