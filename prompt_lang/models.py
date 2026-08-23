@@ -19,10 +19,9 @@ import requests
 
 def call_ollama(prompt: str, model: str, host: str = "http://localhost:11434", timeout: float = 120.0) -> str:
     """Ollama's own /api/generate endpoint. The one provider actually
-    exercised against a live model this project -- every turn-by-turn,
-    AgentDojo, and overhead-measurement result recorded so far went
-    through this exact function's logic (previously duplicated per
-    script, now here)."""
+    exercised against a live model in this project -- every recorded
+    turn-by-turn, AgentDojo, and overhead-measurement result went
+    through this logic."""
     resp = requests.post(
         host.rstrip("/") + "/api/generate",
         json={"model": model, "prompt": prompt, "stream": False},

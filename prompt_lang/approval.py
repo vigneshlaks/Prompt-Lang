@@ -1,19 +1,18 @@
 """Human-in-the-loop approval gate for privileged/sinks calls whose
-argument traces back to a value flagged as needing review. This is
-notes/PRODUCTION_ROADMAP.md items 3 and 12's "coarser
-human-in-the-loop triggering" proposal, built now because of what the
-live finding (README.md / notes/PRODUCTION_ROADMAP.md, 2026-08-19)
-actually showed. Neither RetypingGuard (prompt_lang/defenses.py) nor
-opaque handles (prompt_lang/handles.py) catch a value that was
-corrupted at its declassification source -- describe_handle answering
-a legitimate question with the attacker's IBAN -- and then used
-completely correctly afterward, through a normal variable reference.
-Nothing about *how* that value was used was wrong; the value itself
-was. No argument-checking or content-hiding mechanism built so far can
-see that, because there's nothing syntactically or structurally
-unusual about the call. This module doesn't try to be smarter about
-judging the value. It just refuses to let the system decide alone,
-once a value has passed through a channel known to carry this risk.
+argument traces back to a value flagged as needing review.
+
+The gap this closes (see README.md for the full finding): neither
+RetypingGuard (prompt_lang/defenses.py) nor opaque handles
+(prompt_lang/handles.py) catch a value that was corrupted at its
+declassification source -- describe_handle answering a legitimate
+question with the attacker's IBAN -- and then used completely
+correctly afterward, through a normal variable reference. Nothing
+about *how* that value was used was wrong; the value itself was. No
+argument-checking or content-hiding mechanism built so far can see
+that, because there's nothing syntactically or structurally unusual
+about the call. This module doesn't try to be smarter about judging
+the value. It just refuses to let the system decide alone, once a
+value has passed through a channel known to carry this risk.
 
 Deliberately coarse, matching the roadmap's own framing for this
 proposal. A value gets flagged wherever it's produced by a risky

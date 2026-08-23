@@ -1,12 +1,11 @@
-"""Minimal audit logging for privileged/sinks calls, `notes/
-PRODUCTION_ROADMAP.md` item 2's first real piece. `prompt-lang` had no
-record of what ran, what got blocked, or why -- so an operator running
-a real system on top of it couldn't tell "nothing bad happened" apart
-from "something bad happened and nobody knows." This is a first,
-honest pass, not the full item: it does not attempt item 9's harder
-goal (a per-value provenance chain showing which `sources` call a
-blocked value traces back to) -- it only records which named calls ran
-or were blocked, and why, at the point a call was attempted.
+"""Minimal audit logging for privileged/sinks calls. `prompt-lang` had
+no record of what ran, what got blocked, or why -- so an operator
+running a real system on top of it couldn't tell "nothing bad
+happened" apart from "something bad happened and nobody knows." This
+is a first, honest pass: it does not attempt the harder goal of a
+per-value provenance chain showing which `sources` call a blocked
+value traces back to -- it only records which named calls ran or were
+blocked, and why, at the point a call was attempted.
 
 A real, named limitation, not glossed over: wrap_for_audit_log() can
 only observe what happens *inside* a wrapped function call. It cannot
