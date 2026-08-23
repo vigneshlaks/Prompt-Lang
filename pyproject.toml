@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "prompt-lang"
+version = "0.1.0"
+description = "A constrained language and interpreter for LLM agents, with capability-based trust/secrecy tracking for prompt-injection resistance."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.31",
+]
+
+# License deliberately left unset here rather than guessed -- pick one
+# and add `license = {text = "..."}` (or an SPDX `license = "..."`
+# once setuptools supports it for this project) before this is
+# published anywhere outside this repo.
+
+[project.optional-dependencies]
+openai = ["openai>=1.0"]
+anthropic = ["anthropic>=0.30"]
+dev = ["pytest>=8.0"]
+
+[tool.setuptools.packages.find]
+include = ["prompt_lang*"]
