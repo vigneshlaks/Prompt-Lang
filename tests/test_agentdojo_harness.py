@@ -1,19 +1,20 @@
-"""Tests for _run_stmt_with_auto_split (experiments/agentdojo_test.py),
+"""Tests for _run_stmt_with_auto_split (experiments/agentdojo_live.py),
 the harness-level fix for the multi-statement turn-discipline mistake
-found live in experiments/results/overhead_measurement_results_string_methods_live_check.jsonl
+found live in
+experiments/results/checkpoints/overhead_measurement_results_string_methods_live_check.jsonl
 (user_task_1): a model sometimes writes several statements in one
 response instead of one at a time, gets rejected by run_turn()'s
 one-statement contract, and sometimes just repeats the identical
 mistake until the turn budget runs out with nothing ever executed.
 
-This is deliberately not a change to prompt_lang/interpreter.py --
+This is deliberately not a change to prompt_lang/interpreter.py:
 run_turn()'s one-statement rejection stays exactly as it is, since
 relaxing it there would let a "turn" secretly be a whole program,
 defeating what turn-by-turn execution exists for. The fix lives in the
 harness that reacts to the rejection instead: decompose the rejected
 blob into its real top-level statements and run them for real, one at
 a time, through the same run_turn() a genuinely separate turn would
-have gone through -- not a new execution path, the existing one called
+have gone through, not a new execution path, the existing one called
 more than once.
 """
 
@@ -24,14 +25,14 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "experiments"))
 
-from agentdojo_test import MAX_AUTO_SPLIT_STATEMENTS, _run_stmt_with_auto_split  # noqa: E402
+from agentdojo_live import MAX_AUTO_SPLIT_STATEMENTS, _run_stmt_with_auto_split  # noqa: E402
 from prompt_lang.interpreter import Session  # noqa: E402
 
 
 def test_single_statement_behaves_identically_to_a_normal_turn():
     # _turn_display_result deliberately surfaces an assignment's real
     # bound value instead of run_turn()'s own None return (see its own
-    # docstring in experiments/turn_by_turn_test.py) -- "5\n", not "",
+    # docstring in experiments/turn_by_turn_live.py). "5\n", not "",
     # is the correct, pre-existing behavior this fix must not change.
     session = Session()
     transcript = []
@@ -66,7 +67,7 @@ def test_multi_statement_blob_is_split_and_each_statement_actually_runs():
 def test_multi_statement_blob_matching_the_real_failing_transcript_shape():
     # The exact shape found live: a source read, a running total, a for
     # loop using the new string-method support to filter, then the bare
-    # final-answer statement -- all written by the model in one turn.
+    # final-answer statement, all written by the model in one turn.
     class Transaction:
         def __init__(self, date, amount):
             self.date = date
@@ -122,7 +123,7 @@ def test_a_batch_over_the_cap_is_rejected_whole_not_partially_executed():
     blob = "\n".join(f"x{i} = {i}" for i in range(MAX_AUTO_SPLIT_STATEMENTS + 1))
     output = _run_stmt_with_auto_split(session, blob, {}, frozenset(), frozenset(), transcript)
     assert output == ""
-    # The whole blob was rejected as one turn -- none of the individual
+    # The whole blob was rejected as one turn, none of the individual
     # assignments made it into env, unlike the under-cap case above.
     assert len(transcript) == 1
     assert "a turn must be exactly one statement" in transcript[0][1]
@@ -133,7 +134,7 @@ def test_capability_enforcement_is_not_weakened_by_auto_splitting():
     # The actual security property this fix must not touch: an
     # untrusted value blocked from a privileged call in a split-out
     # sub-statement must still be blocked, exactly as it would be as a
-    # genuinely separate turn -- auto-splitting must not create a path
+    # genuinely separate turn, auto-splitting must not create a path
     # where two statements submitted together somehow see each other's
     # results before either one's own real capability check runs.
     def read_untrusted():
@@ -158,7 +159,7 @@ def test_capability_enforcement_is_not_weakened_by_auto_splitting():
 
 def test_pc_trust_does_not_leak_across_split_statements():
     # Each split statement gets its own fresh pc_trust, the same as a
-    # genuinely separate turn would -- a privileged call blocked inside
+    # genuinely separate turn would, a privileged call blocked inside
     # one branch in the batch must not affect an unrelated, unconditional,
     # trusted privileged call later in the same batch.
     calls = []

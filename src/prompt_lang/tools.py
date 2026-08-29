@@ -1,7 +1,7 @@
 """Real tool functions meant to be wired into a program's `allowed` dict.
 Unlike interpreter.py, which never depends on anything outside the small
 language it defines, these are ordinary Python functions that do real
-I/O -- the kind of thing an actual deployment wires in, not a stub.
+I/O, the kind of thing an actual deployment wires in, not a stub.
 """
 
 from __future__ import annotations
@@ -26,15 +26,15 @@ def interpret(
     injected instruction could be hiding inside. It isn't a trust
     boundary just because a model did the reading. Left as an
     ordinary function, the interpreter's existing propagation rule
-    already keeps the result tagged the same as its input -- untrusted
-    text in, untrusted answer out -- with no interpreter change needed
+    already keeps the result tagged the same as its input (untrusted
+    text in, untrusted answer out), with no interpreter change needed
     to make that true.
 
     `url` defaults to local Ollama, but accepts any Ollama-compatible
-    `/api/generate` endpoint -- e.g. a rented GPU's exposed URL. That
+    `/api/generate` endpoint, e.g. a rented GPU's exposed URL. That
     means the same function can be pointed at a bigger model without
     editing this file: pass `url=my_endpoint` (built the same way
-    `experiments/turn_by_turn_test.py`'s `_generate_endpoint` does).
+    `experiments/turn_by_turn_live.py`'s `_generate_endpoint` does).
     """
     prompt = (
         "Answer the question using only the text below, as briefly as "

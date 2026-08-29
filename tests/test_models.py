@@ -1,5 +1,5 @@
 """Deterministic tests for prompt_lang/models.py. Every network call is
-mocked -- these check dispatch and request/response shape, not that a
+mocked, these check dispatch and request/response shape, not that a
 real model gives good answers (see experiments/ for that). Ollama is
 the one provider actually exercised live this project; openai/anthropic
 are checked structurally only, since no API key is configured here."""

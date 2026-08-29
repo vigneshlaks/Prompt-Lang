@@ -1,17 +1,17 @@
 """Minimal audit logging for privileged/sinks calls. `prompt-lang` had
-no record of what ran, what got blocked, or why -- so an operator
+no record of what ran, what got blocked, or why, so an operator
 running a real system on top of it couldn't tell "nothing bad
 happened" apart from "something bad happened and nobody knows." This
 is a first, honest pass: it does not attempt the harder goal of a
 per-value provenance chain showing which `sources` call a blocked
-value traces back to -- it only records which named calls ran or were
+value traces back to. It only records which named calls ran or were
 blocked, and why, at the point a call was attempted.
 
 A real, named limitation, not glossed over: wrap_for_audit_log() can
 only observe what happens *inside* a wrapped function call. It cannot
 see interpreter.py's own CapabilityError/ConfidentialityError for the
 two checks that happen *before* the underlying function is ever
-called -- an untrusted argument reaching a privileged call, or a
+called: an untrusted argument reaching a privileged call, or a
 privileged/sink call made under a tainted pc_trust/pc_secrecy (see
 interpreter.py's own eval_node: both checks raise ahead of
 `allowed[name](*args, **kwargs)`, so a wrapper around that function
@@ -20,9 +20,9 @@ call that actually executes, and every call blocked by a different
 production-layer wrap composed around it (ApprovalDenied from
 approval.py, HandleAccessDenied from handles.py, or any real exception
 the underlying tool itself raises). Observing interpreter-level blocks
-too would need a different mechanism -- catching at the run()/
-run_turn() call site, or a future interpreter-level hook -- not
-attempted here, named as the honest next step rather than assumed
+too would need a different mechanism (catching at the run()/
+run_turn() call site, or a future interpreter-level hook), not
+attempted here. Named as the honest next step rather than assumed
 solved.
 
 Deliberately excludes argument values from the record, not just from
@@ -32,7 +32,7 @@ content accumulates, the exact kind of new exposure this project has
 spent real effort finding and closing elsewhere (RetypingGuard,
 opaque handles). A caller that specifically wants argument values
 logged can do so explicitly by inspecting AuditRecord.detail's
-already-str exception text or building a richer wrapper on top -- not
+already-str exception text or building a richer wrapper on top, not
 the default here.
 """
 
@@ -52,7 +52,7 @@ class AuditRecord:
 class AuditLog:
     """Holds the sequence of privileged/sinks call attempts for one
     run/session, in order. One log per run/session, the same scoping
-    convention as RetypingGuard/HandleStore/ApprovalGate -- never
+    convention as RetypingGuard/HandleStore/ApprovalGate, never
     shared across independent runs, since a shared log would mix one
     task's record with another's."""
 
@@ -72,7 +72,7 @@ def wrap_for_audit_log(
     """Returns a new allowed dict: same functions, except
     privileged/sinks entries are logged immediately around the real
     call. Doesn't modify allowed in place, matching every other
-    wrap_for_* in this project. Logging never changes the outcome --
+    wrap_for_* in this project. Logging never changes the outcome:
     a blocked call is recorded, then re-raised unchanged, exactly as
     it would have propagated without this wrap. Compose this as the
     outermost wrap if combining with approval.wrap_for_approval or

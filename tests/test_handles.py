@@ -1,4 +1,4 @@
-"""Tests for prompt_lang/handles.py -- opaque-handle confinement
+"""Tests for prompt_lang/handles.py, opaque-handle confinement
 adapted from SecureClaw's read-path design (arXiv:2606.09549). These
 are deterministic; describe_handle()'s `ask` dependency is a fake here,
 not a live model call, matching how prompt_lang.tools.interpret() would
@@ -153,7 +153,7 @@ def test_wrap_for_opaque_handles_end_to_end_read_and_dereference():
 
 def test_wrap_for_opaque_handles_a_forged_handle_id_is_still_denied():
     # The whole point: the runtime can carry a handle through code, but
-    # can never itself construct one that resolves to something real --
+    # can never itself construct one that resolves to something real:
     # a model "guessing" a handle id (or retyping one) gets nothing.
     store = HandleStore()
 
@@ -189,7 +189,7 @@ def test_describe_handle_answers_using_the_real_value_via_injected_ask():
     describe_handle = make_describe_handle(store, ask=fake_ask)
     answer = describe_handle(handle, "what is the amount?")
     assert answer == "The amount is 98.70"
-    # The real content and question are spotlit before reaching ask() --
+    # The real content and question are spotlit before reaching ask():
     # see test_spotlight_* below for the wrapping itself.
     assert seen["text"] == "<<Invoice for 98.70, IBAN US133000000121212121212>>"
     assert seen["question"].endswith("what is the amount?")
@@ -263,7 +263,7 @@ def test_extract_field_returns_every_match_not_just_the_first():
     # a real value and an attacker-planted decoy of the same shape must
     # both come back, so disambiguation happens downstream (the agent's
     # own logic, or the approval gate) instead of the extractor silently
-    # picking one under adversarial pressure -- the exact shape of
+    # picking one under adversarial pressure, the exact shape of
     # mistake that made describe_handle exploitable in the first place.
     store = HandleStore()
     handle = store.mint(
@@ -285,11 +285,11 @@ def test_extract_field_caps_the_number_of_matches():
 
 
 def test_extract_field_result_is_untrusted_when_classified_as_a_source():
-    # No model call happens inside extract_field at all -- but its
+    # No model call happens inside extract_field at all, but its
     # result still must be treated as untrusted, since it's derived
     # from real (possibly attacker-influenced) content. This is a
     # classification the caller has to make (list it under `sources`),
-    # the same as describe_handle's own documented requirement -- this
+    # the same as describe_handle's own documented requirement, this
     # confirms the interpreter's ordinary propagation actually holds
     # once that classification is made.
     store = HandleStore()
@@ -329,7 +329,7 @@ def test_spotlight_prepends_the_anti_injection_instruction_to_the_question():
 def test_spotlight_instruction_matches_the_defense_already_tested_elsewhere():
     # Same real instruction text as experiments/defense_comparison.py's
     # SPOTLIGHTING_SYSTEM_MESSAGE (itself copied verbatim from
-    # AgentDojo's own spotlighting_with_delimiting defense) -- not a new
+    # AgentDojo's own spotlighting_with_delimiting defense), not a new
     # invention, the same one already shown not to help in the general
     # case (see that experiment's own result: 6/6 complied either way).
     _, question = _spotlight("x", "y")

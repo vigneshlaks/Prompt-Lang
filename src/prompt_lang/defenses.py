@@ -1,7 +1,7 @@
 """Production-layer defenses that sit outside interpreter.py.
 
 The problem: interpreter.py's trust/secrecy tracking only sees
-explicit and implicit data flow -- a tagged value reaching a call as
+explicit and implicit data flow: a tagged value reaching a call as
 an argument, or controlling which branch a call sits in. It has
 nothing to see when a model reads untrusted content and then retypes
 the same text as a fresh literal in a later statement. Concretely: a
@@ -9,7 +9,7 @@ poisoned bill contains an attacker's IBAN; the model reads it into a
 variable, then calls `send_money(recipient="ATTACKER-IBAN-HERE")`
 with the IBAN typed out as a plain string literal rather than a
 reference to the tainted variable. A literal is TRUSTED/PUBLIC by
-construction (eval_node's ast.Constant case) -- there's no data-flow
+construction (eval_node's ast.Constant case); there's no data-flow
 edge for any taint tracker, this one included, to check.
 
 RetypingGuard is a heuristic detector for this gap, not a proof. It
@@ -18,8 +18,8 @@ run, and flags a literal argument to a `privileged`/`sinks` call whose
 text overlaps something the model only ever saw by reading untrusted
 or secret data. It has a real false-positive rate (a model correctly
 echoing a value a human typed directly into the task, not read from a
-source) and a real false-negative rate (a reformatted value -- spaces
-inserted, case changed -- won't match verbatim). Kept out of
+source) and a real false-negative rate too: spaces inserted or case
+changed in a reformatted value won't match verbatim. Kept out of
 interpreter.py deliberately: the whitelist boundary is about what's
 allowed to run, not about catching every mistake a legal operation
 can still make.
@@ -52,7 +52,7 @@ def _extract_strings(value: Any, _seen: set[int] | None = None) -> list[str]:
     """Pulls every string worth tracking out of a raw function return
     value: a bare string, or (recursively) strings nested in a list,
     tuple, set, dict, or a plain object's attributes. Deliberately
-    permissive -- missing a nested string only weakens detection, so
+    permissive, missing a nested string only weakens detection, so
     this errs toward finding more text. _seen guards a self-
     referencing value."""
     if _seen is None:
@@ -117,7 +117,7 @@ class RetypingGuard:
         """Returns a RetypingFlag for every string-literal argument to
         a privileged or sinks call that overlaps text this guard has
         recorded. Works on one statement or a full program. A
-        malformed statement returns no flags rather than raising --
+        malformed statement returns no flags rather than raising:
         interpreter.py is responsible for rejecting bad syntax."""
         try:
             tree = ast.parse(source, mode="exec")
@@ -154,7 +154,7 @@ class RetypingGuard:
 
 
 def enforce(flags: list[RetypingFlag]) -> None:
-    """Raises RetypingDetected if flags is non-empty -- the blocking
+    """Raises RetypingDetected if flags is non-empty, the blocking
     response to a detected retype. A caller that instead wants a
     softer response (route to a human, or just annotate a trace)
     should inspect flags directly rather than calling this."""
@@ -184,7 +184,7 @@ def run_turn_guarded(
 ) -> Any:
     """Like interpreter.run_turn(), but checks source against guard
     first and raises RetypingDetected instead of executing the
-    statement if anything is flagged -- turning RetypingGuard from an
+    statement if anything is flagged, turning RetypingGuard from an
     observe-only layer into an actual block. `allowed` must already be
     wrapped with wrap_for_retyping_guard() using this same guard, or
     source/confidential text read by later calls won't be recorded.
@@ -192,7 +192,7 @@ def run_turn_guarded(
     Why blocking rather than rewriting the retyped literal into a
     reference to the tainted variable: the tainted variable usually
     holds the whole source text (e.g. a full bill), while the retyped
-    literal is only a substring of it (the IBAN inside the bill) --
+    literal is only a substring of it (the IBAN inside the bill),
     not equal to the variable's value, so there's no whole-variable
     reference to substitute in. Building the correct replacement would
     need a substring/slice expression, and this grammar has no string
@@ -221,13 +221,13 @@ def wrap_for_retyping_guard(
 ) -> dict[str, Callable]:
     """Returns a new allowed dict: same functions, except
     sources/confidential entries are wrapped to also record their
-    return value with guard. Doesn't modify allowed in place --
+    return value with guard. Doesn't modify allowed in place,
     matching the rest of this codebase's preference for not mutating
     a caller's dict out from under it. A name in both sources and
     confidential gets recorded to both buckets. interpreter.py has a
     tie-break rule for when a name is listed in two roles (sources
     wins over sanitizers, confidential wins over declassifiers), but
-    this doesn't need one at all -- recording to both buckets is
+    this doesn't need one at all, recording to both buckets is
     harmless, since the only effect is more text tracked, not a
     conflicting decision."""
     wrapped = dict(allowed)

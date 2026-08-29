@@ -4,8 +4,8 @@ argument traces back to a value flagged as needing review.
 The gap this closes (see README.md for the full finding): neither
 RetypingGuard (prompt_lang/defenses.py) nor opaque handles
 (prompt_lang/handles.py) catch a value that was corrupted at its
-declassification source -- describe_handle answering a legitimate
-question with the attacker's IBAN -- and then used completely
+declassification source (describe_handle answering a legitimate
+question with the attacker's IBAN), and then used completely
 correctly afterward, through a normal variable reference. Nothing
 about *how* that value was used was wrong; the value itself was. No
 argument-checking or content-hiding mechanism built so far can see
@@ -18,9 +18,9 @@ Deliberately coarse, matching the roadmap's own framing for this
 proposal. A value gets flagged wherever it's produced by a risky
 channel (describe_handle's answer is the motivating and currently
 only real case). Any privileged/sinks call later reached with that
-value as an argument -- checked by substring match, not just exact
+value as an argument (checked by substring match, not just exact
 equality, matching defenses.RetypingGuard's own precedent for erring
-toward more scrutiny rather than less -- is routed through an
+toward more scrutiny rather than less) is routed through an
 injected `approve` callback before it's allowed to run at all.
 
 Known, named limitation: the gate is composed as the outermost wrap
@@ -28,12 +28,12 @@ around whatever `allowed` it's given (see wrap_for_approval). That
 means it sees exactly the arguments the model wrote, before any
 Handle resolution happens inside a
 handles.wrap_privileged_for_handles-wrapped function. For
-describe_handle's answer specifically this doesn't matter -- that
+describe_handle's answer specifically this doesn't matter: that
 value is always a plain string by the time it's bound to a variable,
 never a Handle. But a Handle passed directly to a privileged call
 (bypassing describe_handle entirely) would not be visible to this
 gate's matching in its current form, since the gate never resolves
-it. Not fixed here -- named so it isn't quietly assumed away.
+it. Not fixed here; named so it isn't quietly assumed away.
 """
 
 from __future__ import annotations
@@ -64,7 +64,7 @@ class ApprovalGate:
     """Tracks values that require approval before reaching a
     privileged/sinks call, and holds the callback that actually asks.
     One gate per run/session, same scoping convention as RetypingGuard
-    and HandleStore. Never shared across independent runs -- a shared
+    and HandleStore. Never shared across independent runs, a shared
     gate would let one task's flagged values gate another's calls."""
 
     def __init__(self, approve: Callable[[ApprovalRequest], bool]):
@@ -75,8 +75,8 @@ class ApprovalGate:
         """Marks value as requiring approval before it (or something
         containing it) can reach a privileged/sinks call as an
         argument. Called wherever a value is produced by a channel
-        known to carry this risk -- describe_handle's answer, most
-        directly -- but nothing here is specific to that function."""
+        known to carry this risk, describe_handle's answer, most
+        directly, but nothing here is specific to that function."""
         self._flagged.append((value, reason))
 
     def _matches(self, arg: Any) -> list[str]:
@@ -92,7 +92,7 @@ class ApprovalGate:
     def check_call(self, call_name: str, args: tuple[Any, ...], kwargs: dict[str, Any]) -> None:
         """Raises ApprovalDenied if any argument matches a flagged
         value and the approve() callback refuses it. A no-op if
-        nothing matches -- no callback invoked at all -- so an
+        nothing matches, no callback invoked at all, so an
         ordinary call with no flagged content is never interrupted."""
         matched_values: list[Any] = []
         matched_reasons: list[str] = []
@@ -131,7 +131,7 @@ def wrap_for_approval(
     handles.wrap_privileged_for_handles's own convention. Compose this
     as the outermost wrap around a
     handles.wrap_for_opaque_handles-wrapped allowed, if using both, so
-    a human reviewing a request sees it -- see this module's own
+    a human reviewing a request sees it, see this module's own
     docstring for what that ordering does and doesn't cover."""
     wrapped = dict(allowed)
     for name in privileged | sinks:

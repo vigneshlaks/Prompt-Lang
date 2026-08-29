@@ -1,5 +1,5 @@
 """Deterministic tests for the whitelisted string-method calls
-(_STRING_METHODS in prompt_lang/interpreter.py) -- startswith,
+(_STRING_METHODS in prompt_lang/interpreter.py), startswith,
 endswith, strip, lower/upper, replace, split, find, count. Split out
 of the original test_interpreter.py; see test_interpreter_core.py's
 own docstring for why.
@@ -50,14 +50,14 @@ def test_method_call_on_a_non_string_value_is_rejected():
 
 
 def test_method_call_on_a_non_string_value_is_rejected_even_when_the_name_is_whitelisted():
-    # A weaker version of the isinstance(str) check -- one that only
-    # filters by method *name* -- would silently pass here: "count" is a
+    # A weaker version of the isinstance(str) check, one that only
+    # filters by method *name*, would silently pass here: "count" is a
     # real method on both str and list, so a name-only whitelist can't
     # tell these apart. Confirmed live (before this test existed) that
     # removing the isinstance check specifically lets this one through
     # silently, returning a wrong answer (0) instead of raising, since a
     # tagged list is really a list of (value, Trust, Secrecy) triples
-    # internally -- `.count(2)` searches for a bare 2 that can never
+    # internally, `.count(2)` searches for a bare 2 that can never
     # match. This is the actual case that exercises the isinstance
     # check, not just an unlisted method name.
     with pytest.raises(InterpreterError):
@@ -107,7 +107,7 @@ def test_string_method_trust_propagates_from_the_receiver():
 
 def test_string_method_trust_propagates_from_an_argument_too():
     # The receiver itself is trusted; the *argument* to replace() is the
-    # untrusted one -- trust must combine both operands, not just the
+    # untrusted one, trust must combine both operands, not just the
     # receiver, the same rule ast.BinOp/ast.Compare already follow.
     def read_untrusted():
         return "x"

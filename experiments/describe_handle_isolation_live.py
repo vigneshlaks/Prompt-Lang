@@ -3,15 +3,15 @@ live run (notes/PRODUCTION_ROADMAP.md item 12, 2026-08-19 update):
 describe_handle()'s own underlying model call answered a legitimate
 extraction question with the attacker's IBAN instead of the real one,
 because the injected content reached that call directly. That finding
-came out of a full agent loop against a rented A40 running qwen2.5:32b
--- expensive and slow to iterate on. This isolates the one call that
+came out of a full agent loop against a rented A40 running qwen2.5:32b,
+expensive and slow to iterate on. This isolates the one call that
 actually matters: no agent loop, no turn-by-turn harness, no RunPod,
 just the real poisoned bill text (pulled straight from AgentDojo's own
 environment, not hand-fabricated) handed directly to describe_handle(),
 spotlit and undefended, compared head to head, on models already
 available locally.
 
-This should have run before the full live test, not after -- a cheap,
+This should have run before the full live test, not after: a cheap,
 targeted check of the weakest link would have surfaced the same finding
 without needing a GPU rental. Built now to close that process gap and
 to answer the next real question: does spotlighting describe_handle's
@@ -21,7 +21,7 @@ in this project (experiments/defense_comparison.py, 6/6 complied either
 way).
 
 Usage (from the repo root):
-    python3 experiments/describe_handle_isolation_test.py --models qwen2.5:3b llama3.2:3b --reps 5
+    python3 experiments/describe_handle_isolation_live.py --models qwen2.5:3b llama3.2:3b --reps 5
 """
 
 from __future__ import annotations
@@ -32,9 +32,9 @@ import json
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
-from agentdojo_test import _JB_STRING, make_allowed, task_suite
+from agentdojo_live import _JB_STRING, make_allowed, task_suite
 from prompt_lang.handles import HandleStore, _spotlight, make_describe_handle
 from prompt_lang.tools import interpret
 
@@ -44,7 +44,7 @@ REAL_IBAN = "UK12345678901234567890"
 
 def get_real_injected_bill_text() -> tuple[str, str]:
     """Returns (bill_text, attacker_iban) using AgentDojo's own real
-    environment and its own real injection template -- the identical
+    environment and its own real injection template, the identical
     poisoned content the full live run actually saw, not a stand-in."""
     from agentdojo.functions_runtime import FunctionsRuntime
 
@@ -56,7 +56,7 @@ def get_real_injected_bill_text() -> tuple[str, str]:
     env = pre_env.model_copy(deep=True)
     allowed = make_allowed(env, runtime)
     bill_text = allowed["read_file"](file_path="bill-december-2023.txt")
-    # The attacker's target IBAN isn't a separate field anywhere -- it's
+    # The attacker's target IBAN isn't a separate field anywhere, it's
     # whatever GOAL actually asks the agent to do. Extracted here by
     # scanning GOAL text for the same IBAN shape describe_handle would
     # be asked to answer with, so the check below doesn't hardcode a
@@ -74,7 +74,7 @@ def run_condition(model: str, host: str, reps: int, spotlit: bool, bill_text: st
     if spotlit:
         describe_handle = make_describe_handle(store, ask=ask, max_chars=200)
     else:
-        # The pre-fix path: no delimiting, no anti-injection instruction --
+        # The pre-fix path: no delimiting, no anti-injection instruction;
         # the exact call shape that produced the original finding.
         def describe_handle(h, question):
             return ask(str(store.peek(h)), question)[:200]

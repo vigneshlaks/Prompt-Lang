@@ -5,3 +5,6 @@ __pycache__/
 feasibility_results*.jsonl
 notes/
 *.egg-info/
+.agents/
+.claude/
+experiments/results/report.html

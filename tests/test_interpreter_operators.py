@@ -1,5 +1,5 @@
 """Deterministic tests for the arithmetic, comparison, boolean, and
-unary operators -- chained comparisons, short-circuit evaluation,
+unary operators, chained comparisons, short-circuit evaluation,
 the MAX_EXPONENT bound, and unary minus. Split out of the original
 test_interpreter.py; see test_interpreter_core.py's own docstring for
 why.
@@ -42,7 +42,7 @@ def test_arithmetic_on_variables():
 
 
 def test_division_by_zero_propagates_as_a_normal_python_exception():
-    # Not caught or converted -- the whitelist boundary is about what's
+    # Not caught or converted, the whitelist boundary is about what's
     # allowed to run, not about catching every mistake a legal operation
     # can still make (same stance as a whitelisted call with the wrong
     # argument types).
@@ -103,7 +103,7 @@ def test_arithmetic_on_two_trusted_values_is_not_blocked():
 
 def test_privileged_call_blocked_behind_an_untrusted_arithmetic_branch_condition():
     # pc_trust has to pick up BinOp's trust the same way it already picks
-    # up Compare's -- an arithmetic expression used directly as an if
+    # up Compare's, an arithmetic expression used directly as an if
     # condition is just as capable of implicit flow as a comparison is.
     def read_secret():
         return 1
@@ -122,7 +122,7 @@ def test_privileged_call_blocked_behind_an_untrusted_arithmetic_branch_condition
 
 # Full operator sweep: remaining arithmetic (//, %, **), unary (-, +, not),
 # boolean (and, or), and chained comparisons. Same shape and rigor as the
-# +/-/*/ additions above -- correctness, capability propagation, and a
+# +/-/*/ additions above: correctness, capability propagation, and a
 # pc_trust/pc_secrecy regression test for every new node type used as a
 # branch condition, since that's exactly the category of gap the original
 # ast.Compare fix (and the arithmetic one after it) needed.
@@ -146,7 +146,7 @@ def test_exponent_magnitude_over_the_cap_raises():
 
 
 def test_large_base_with_small_exponent_is_not_blocked_by_the_exponent_cap():
-    # The guard is on the exponent's magnitude, not the base's -- a large
+    # The guard is on the exponent's magnitude, not the base's, a large
     # base raised to a small exponent is cheap and should not be rejected.
     assert run("(10 ** 300) ** 2", {}) == 10 ** 600
 
@@ -410,7 +410,7 @@ def test_privileged_call_not_blocked_behind_a_fully_trusted_boolean_condition():
 # judged on): does this system avoid blocking unrelated clean
 # operations just because something untrusted/secret exists elsewhere
 # in the program? Everything tested so far checks the opposite
-# direction -- that bad cases get blocked. These confirm good cases
+# direction, that bad cases get blocked. These confirm good cases
 # still succeed.
 
 
@@ -601,7 +601,7 @@ def test_not_in_operator_on_strings():
 
 def test_in_operator_on_a_list_literal():
     # A list literal's elements are (value, Trust, Secrecy) triples
-    # internally, not bare values -- `in` has to unwrap them before
+    # internally, not bare values, `in` has to unwrap them before
     # comparing, or every membership check silently comes back False.
     assert run("3 in [1, 2, 3]", {}) is True
     assert run("5 in [1, 2, 3]", {}) is False
@@ -671,7 +671,7 @@ def test_in_avoids_the_quote_collision_bug_found_in_turn_by_turn_testing():
     # The real bug: a model copying interpret()'s exact returned text
     # into an == literal breaks whenever that text contains a quote
     # character, since escaping/quote-swapping makes the copy stop
-    # matching byte-for-byte. `in` sidesteps this entirely -- no need
+    # matching byte-for-byte. `in` sidesteps this entirely, no need
     # to reproduce the answer verbatim, just check for a keyword.
     answer = (
         'The message is trying to manipulate you into doing something '
@@ -732,7 +732,7 @@ def test_attribute_access_cannot_be_used_to_reach_and_call_a_whitelisted_name():
     # The actual security property this feature depends on: ast.Call
     # only ever dispatches by looking up a literal whitelisted name in
     # `allowed`, and ast.Name as a value expression only ever reads
-    # `env`, never `allowed` -- so a whitelisted callable is never
+    # `env`, never `allowed`, so a whitelisted callable is never
     # reachable as a value at all, and nothing reached via attribute
     # access, however deeply chained, can ever end up called.
     def get_str():

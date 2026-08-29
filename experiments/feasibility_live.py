@@ -12,8 +12,8 @@ Requires Ollama running locally (`ollama serve`, usually automatic after
     ollama pull llama3.1:8b
 
 Usage (from the repo root):
-    python3 experiments/feasibility_test.py
-    python3 experiments/feasibility_test.py --models llama3.1:8b qwen2.5:7b --reps 5
+    python3 experiments/feasibility_live.py
+    python3 experiments/feasibility_live.py --models llama3.1:8b qwen2.5:7b --reps 5
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from typing import Any, Callable
 
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from prompt_lang.interpreter import InterpreterError, run
 
@@ -275,7 +275,7 @@ def attempt(model: str, task: Task) -> dict:
     except Exception as exc:
         # A whitelisted call with the wrong arity/type (e.g. approve(True)
         # when approve takes no args) raises a normal Python exception,
-        # not InterpreterError -- that's legal-per-whitelist but still a
+        # not InterpreterError, that's legal-per-whitelist but still a
         # failed attempt, distinct from hitting the grammar boundary.
         error = f"runtime error in whitelisted call: {exc!r}"
 

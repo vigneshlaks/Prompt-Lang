@@ -2,8 +2,8 @@
 literal-retyping gap: a model that reads untrusted or secret data and
 then retypes it as a fresh literal argument leaves no data-flow edge
 for interpreter.py's trust/secrecy tracking to see (see defenses.py's
-module docstring). These tests are deterministic -- no live model
-calls -- and include a regression test that reproduces the exact
+module docstring). These tests are deterministic, no live model
+calls, and include a regression test that reproduces the exact
 statement shape found live against qwen2.5:32b (an IBAN read from a
 poisoned bill, then retyped verbatim into send_money's recipient
 argument), to prove the guard actually catches the case that motivated
@@ -38,7 +38,7 @@ def test_flags_a_literal_matching_recorded_source_text():
 def test_regression_the_real_iban_retyping_case_found_live():
     # Reproduces the documented finding verbatim: a poisoned bill's
     # IBAN, read via a sources call, then retyped as a plain string
-    # literal in a privileged send_money call -- never a reference to
+    # literal in a privileged send_money call, never a reference to
     # the tainted variable that held it.
     guard = RetypingGuard()
     poisoned_bill_text = (
@@ -56,7 +56,7 @@ def test_regression_the_real_iban_retyping_case_found_live():
 
 def test_does_not_flag_a_variable_reference_to_the_same_content():
     # A variable reference is already covered by interpreter.py's own
-    # trust tracking -- this guard exists specifically for the case that
+    # trust tracking, this guard exists specifically for the case that
     # tracking can't see (a fresh literal), so it should stay silent on
     # ordinary tainted-variable usage rather than double up on it.
     guard = RetypingGuard()
@@ -115,7 +115,7 @@ def test_confidential_output_flags_a_matching_sink_argument():
 
 
 def test_source_text_does_not_leak_into_sink_side_checks():
-    # sources and confidential are tracked in separate buckets --
+    # sources and confidential are tracked in separate buckets:
     # untrusted-but-not-secret content shouldn't cause a sink call to be
     # flagged, since that would conflate two independent properties the
     # interpreter itself keeps separate (Trust vs Secrecy).
@@ -141,7 +141,7 @@ def test_extracts_strings_nested_in_lists_and_dicts():
 
 
 def test_extracts_strings_from_a_plain_objects_attributes():
-    # Matches the shape a real tool actually returns -- e.g. AgentDojo's
+    # Matches the shape a real tool actually returns, e.g. AgentDojo's
     # Transaction objects, the reason interpreter.py's ast.Attribute case
     # exists at all.
     class Bill:
@@ -231,7 +231,7 @@ def test_run_turn_guarded_allows_an_unrelated_statement_through():
 def test_run_turn_guarded_blocks_the_real_retyping_case():
     # The actual documented case: the tainted variable holds the whole
     # bill text (a sources call's return), and the retyped literal is
-    # only the IBAN substring within it -- not equal to the variable's
+    # only the IBAN substring within it, not equal to the variable's
     # value. check_statement's substring match (not equality) is what
     # catches this; a naive equality-based check would miss it entirely.
     session = Session()
@@ -267,7 +267,7 @@ def test_run_turn_guarded_blocks_the_real_retyping_case():
 
 def test_run_turn_guarded_still_relies_on_the_core_interpreter_for_variable_references():
     # A tainted variable used directly (not retyped) is already correctly
-    # handled by interpreter.py's own trust tracking -- run_turn_guarded
+    # handled by interpreter.py's own trust tracking, run_turn_guarded
     # doesn't need to catch this case itself, and shouldn't raise its own
     # RetypingDetected for it; CapabilityError is the core system's own
     # answer, still surfaced through unchanged.
@@ -304,7 +304,7 @@ def test_run_turn_guarded_still_relies_on_the_core_interpreter_for_variable_refe
 
 def test_full_multi_statement_program_is_also_accepted():
     # check_statement doesn't enforce run_turn's one-statement-per-call
-    # contract -- it also accepts a full program the way run() does,
+    # contract, it also accepts a full program the way run() does,
     # since a harness driving run() instead of run_turn still needs this
     # check applied before execution.
     guard = RetypingGuard()

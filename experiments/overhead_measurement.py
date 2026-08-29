@@ -1,14 +1,14 @@
 """notes/ROADMAP.md item 6: does routing an agent through prompt-lang's
 constrained grammar cost real task-completion capability compared to
 giving the same model unrestricted, native tool-calling? Nothing in
-this project has measured that tradeoff before -- every prior result
+this project has measured that tradeoff before: every prior result
 answers "can the model hit the grammar" and "does the security
 mechanism hold," never "what does the security mechanism cost."
 
 Two paths, same model, same AgentDojo tasks, same Ollama server:
 
     (a) prompt-lang: the existing turn-by-turn adapter
-        (experiments/agentdojo_test.py) -- one statement per model
+        (experiments/agentdojo_live.py), one statement per model
         call, executed through run_turn(), capability-checked.
     (b) native: AgentDojo's own real agent_pipeline (LocalLLM +
         ToolsExecutionLoop), structured JSON tool-calling via Ollama's
@@ -42,12 +42,12 @@ from agentdojo.agent_pipeline.tool_execution import ToolsExecutionLoop, ToolsExe
 from agentdojo.functions_runtime import FunctionsRuntime
 from agentdojo.task_suite.load_suites import get_suites
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from prompt_lang.interpreter import Session
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from agentdojo_test import (  # noqa: E402
+from agentdojo_live import (  # noqa: E402
     SUITE_CLASSIFICATIONS,
     _run_stmt_with_auto_split,
     build_prompt,
@@ -72,7 +72,7 @@ SYSTEM_MESSAGE = (
 
 
 class _CountingLocalLLM(LocalLLM):
-    """Wraps LocalLLM.query to count model calls -- the native pipeline's
+    """Wraps LocalLLM.query to count model calls, the native pipeline's
     equivalent of a turn count, for a fair latency/cost comparison
     against prompt-lang's per-statement calls."""
 
@@ -87,7 +87,7 @@ class _CountingLocalLLM(LocalLLM):
 
 def _messages_to_transcript(messages) -> list[dict]:
     """Reduces AgentDojo's ChatMessage objects to plain, JSON-serializable
-    dicts for logging -- role, text content, and any tool call made or
+    dicts for logging: role, text content, and any tool call made or
     reported, which is exactly what's needed to read back why a native
     attempt succeeded or failed after the fact."""
     out = []
@@ -127,7 +127,7 @@ def run_native(model: str, host: str, suite, task_id: str) -> dict:
 
     # run_task_with_pipeline() already does exactly the right thing to
     # compute utility (message parsing, retries, functions-stack-trace
-    # derivation) -- reimplementing that here would risk a subtle
+    # derivation), reimplementing that here would risk a subtle
     # mismatch with AgentDojo's own scoring. Instead, capture the
     # message transcript as a side effect of the real call, by wrapping
     # pipeline.query() to stash its own return value, rather than
@@ -176,7 +176,7 @@ def run_prompt_lang(model: str, host: str, suite, suite_name: str, task_id: str,
         # Found live: isinstance(display, str) dropped every turn that
         # resolved to a number (or any non-string value) from
         # model_output entirely, even when the computation was correct
-        # -- a task like "what's my total spending" ends on
+        #, a task like "what's my total spending" ends on
         # `total_spending = total_spending + transaction.amount`, a
         # float, never a string, so the real answer never reached
         # utility()'s text check regardless of whether it was right.
@@ -207,7 +207,7 @@ def main() -> None:
     args = parser.parse_args()
 
     global OLLAMA_URL
-    import agentdojo_test as adt
+    import agentdojo_live as adt
     adt.OLLAMA_URL = args.host.rstrip("/") + "/api/generate"
 
     suites = get_suites("v1")

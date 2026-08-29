@@ -1,14 +1,14 @@
 """Provider-agnostic model calling. Factored out of experiments/, where
-every harness (feasibility_test.py, turn_by_turn_test.py, agentdojo_test.py,
+every harness (feasibility_live.py, turn_by_turn_live.py, agentdojo_live.py,
 overhead_measurement.py) had grown its own copy of the same
-requests.post-to-Ollama pattern. Pure plumbing -- nothing here touches
+requests.post-to-Ollama pattern. Pure plumbing: nothing here touches
 the interpreter, the grammar, or the capability system, and none of
 that changes when this does.
 
 Every provider function takes the same shape: one flat prompt string in,
 one completion string out. That matches how every harness in this
-project already treats a "turn" -- a single prompt, not a structured,
-multi-message conversation -- so adding a provider means matching that
+project already treats a "turn": a single prompt, not a structured,
+multi-message conversation, so adding a provider means matching that
 shape, not changing how callers use it.
 """
 
@@ -19,7 +19,7 @@ import requests
 
 def call_ollama(prompt: str, model: str, host: str = "http://localhost:11434", timeout: float = 120.0) -> str:
     """Ollama's own /api/generate endpoint. The one provider actually
-    exercised against a live model in this project -- every recorded
+    exercised against a live model in this project, every recorded
     turn-by-turn, AgentDojo, and overhead-measurement result went
     through this logic."""
     resp = requests.post(
@@ -34,7 +34,7 @@ def call_ollama(prompt: str, model: str, host: str = "http://localhost:11434", t
 def call_openai(prompt: str, model: str, timeout: float = 120.0) -> str:
     """OpenAI's chat completions API, given the flat prompt as a single
     user message. Built to the real SDK's documented interface, but not
-    live-verified against a real endpoint in this project -- no
+    live-verified against a real endpoint in this project, no
     OPENAI_API_KEY is configured in this environment. Requires
     `pip install openai` and that key set before it will actually run.
     """
@@ -51,7 +51,7 @@ def call_openai(prompt: str, model: str, timeout: float = 120.0) -> str:
 def call_anthropic(prompt: str, model: str, timeout: float = 120.0, max_tokens: int = 4096) -> str:
     """Anthropic's messages API, same single-prompt-as-one-user-message
     shape as call_openai. Same caveat: built to the real SDK's
-    documented interface, not live-verified here -- no ANTHROPIC_API_KEY
+    documented interface, not live-verified here, no ANTHROPIC_API_KEY
     is configured in this environment. Requires `pip install anthropic`
     and that key set before it will actually run.
     """

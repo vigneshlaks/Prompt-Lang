@@ -1,5 +1,5 @@
 """Deterministic tests for prompt_lang/tools.py. The network call is
-mocked here -- these check that interpret() is shaped correctly and
+mocked here, these check that interpret() is shaped correctly and
 wires into the interpreter's capability system as intended, not that a
 real model gives good answers. See experiments/ for that."""
 
@@ -37,7 +37,7 @@ def test_interpret_strips_whitespace_from_the_model_response(mock_post):
 
 @patch("prompt_lang.tools.requests.post")
 def test_interpret_used_as_an_ordinary_function_stays_untrusted(mock_post):
-    # The interpreter never changed for this -- interpret() just has to
+    # The interpreter never changed for this, interpret() just has to
     # NOT be registered as a sanitizer, and the existing propagation
     # rule (untrusted argument in, untrusted result out) already does
     # the rest. This confirms the wiring works with the real function,

@@ -1,4 +1,4 @@
-"""Tests for prompt_lang/audit.py -- minimal audit logging for
+"""Tests for prompt_lang/audit.py, minimal audit logging for
 privileged/sinks calls. These are deterministic, no model or real tool
 involved; the wrapped functions are plain fakes."""
 
@@ -42,7 +42,7 @@ def test_logging_never_swallows_the_real_exception():
     # The actual security-relevant property: a wrap that observes an
     # exception must still let it propagate unchanged. A version that
     # accidentally caught and discarded it would silently turn a real
-    # rejection into an unblocked call -- worse than no logging at all.
+    # rejection into an unblocked call, worse than no logging at all.
     log = AuditLog()
 
     def rejected(**k):
@@ -97,7 +97,7 @@ def test_documented_limitation_interpreter_level_blocks_are_not_observed():
     # a wrapper around a function can only see what happens inside
     # that call. interpreter.py's own CapabilityError, for an
     # untrusted argument reaching a privileged call, is raised before
-    # the wrapped function is ever invoked at all -- so the audit log
+    # the wrapped function is ever invoked at all, so the audit log
     # has nothing to record for it. This isn't a bug to fix here; it's
     # the actual, named scope boundary of this first pass.
     log = AuditLog()

@@ -4,9 +4,9 @@ laundering, the nested-loop budget bug, both implicit-flow gaps, the
 quote-collision bug) came from one person hand-writing a case that
 happened to hit a real gap. This generalizes that into a search: build
 many random small programs, each with a *ground truth* about whether a
-privileged/sink call should be blocked -- known because the generator
+privileged/sink call should be blocked (known because the generator
 built the data-flow chain itself, not derived from the interpreter's
-own Trust/Secrecy tags, which would make the check tautological -- and
+own Trust/Secrecy tags, which would make the check tautological), and
 assert the interpreter's actual behavior matches.
 
 This is structural fuzzing, not full symbolic data-flow fuzzing: the
@@ -14,20 +14,20 @@ generator randomizes chain length, which hop types are used (ordinary
 passthrough, sanitizer, declassifier, container wrap/unwrap, mixing in
 a second untrusted/secret source), and whether the final privileged/sink
 call receives the value directly or is only reachable behind a branch
-gated on it (including via the in/not-in operator) -- the same shapes
+gated on it (including via the in/not-in operator), the same shapes
 the hand-written adversarial tests sampled a few points from, searched
 here at volume instead.
 
 Dicts were entirely absent from this generator until dict iteration
-was added to the interpreter (each dict entry now stores a 5-tuple --
-value, value_trust, value_secrecy, key_trust, key_secrecy -- instead of
+was added to the interpreter (each dict entry now stores a 5-tuple:
+value, value_trust, value_secrecy, key_trust, key_secrecy; instead of
 the old 3-tuple, so a key can carry its own precise tag independent of
 its value's). Three dict-specific hops were added to close that gap,
 not just the basic value-read case: a value-side wrap/unwrap mirroring
 the existing listwrap hop, a key-side round-trip that puts the tracked
 variable through a dict *key* and reads it back via iteration (the new
 capability itself, not just the old value-reading path), and a
-cross-contamination check -- the exact adversarial case verified by
+cross-contamination check, the exact adversarial case verified by
 hand when this was built: an unrelated entry's freshly-read untrusted
 value must not leak onto a different, individually-clean key's own tag
 when both live in the same dict.
@@ -42,7 +42,7 @@ mid-chain, the same regression shape as the existing "ordinary" hop
 but through a user-defined call+return instead of a whitelisted one.
 More importantly, a new "func_branch" gate calls the zero-argument
 wrapper from inside the same branch shape the existing "eq_branch"
-gate already uses -- since the wrapper itself takes no arguments, the
+gate already uses, since the wrapper itself takes no arguments, the
 *only* way it could ever be blocked is via pc_trust inherited from the
 branch condition into the function body, exactly the property that was
 hand-verified and mutation-tested when function definitions were
@@ -51,20 +51,20 @@ shapes instead of the handful of hand-written cases.
 
 String methods got the same treatment once they were added to the
 interpreter. The generator now tracks a third piece of ground truth,
-`is_string`, alongside untrusted/secret -- `trusted_val()` returns a
+`is_string`, alongside untrusted/secret. `trusted_val()` returns a
 plain int, and calling a string method on it must raise rather than
 match any expected security outcome, so string-method hops/gates are
 only ever chosen when the tracked variable is actually a string at
 that point in the chain (true after every source read, since
 `read_untrusted`/`read_secret`/`mix` all produce strings; false only
 after `trusted_val()`). "string_method_wrap" mirrors "ordinary" through
-`.upper()` instead of a whitelisted function -- receiver-position trust
+`.upper()` instead of a whitelisted function, receiver-position trust
 propagation. "string_method_arg_taint" mirrors the "mix_*" hops but
 through a method's *argument* position instead of a plain function
-argument -- `"fixed-text".replace(var, "Y")`, confirming trust/secrecy
+argument, `"fixed-text".replace(var, "Y")`, confirming trust/secrecy
 combine from an argument to a method call, not just its receiver.  Most
 importantly, a new "string_method_branch" gate uses `var.startswith(var)`
-as the branch condition instead of `var == var` -- the direct,
+as the branch condition instead of `var == var`, the direct,
 random-volume analog of "eq_branch" and "func_branch" for the newest
 expression type capable of gating a branch, checking that pc_trust/
 pc_secrecy elevation works through a method-call condition exactly the
@@ -121,7 +121,7 @@ CAPS = dict(
 
 # Prepended to every generated program. identity_func is a plain
 # passthrough for the "func_wrap" hop. call_privileged/call_sink take
-# no arguments of their own -- the only way a branch that calls one of
+# no arguments of their own, the only way a branch that calls one of
 # them could ever be blocked is via pc_trust inherited from the
 # branch's own condition into the function body, which is exactly the
 # property the "func_branch" gate below is checking at random volume.
@@ -163,7 +163,7 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             "func_wrap",
         ]
         if is_string:
-            # trusted_val() returns a plain int -- calling a string
+            # trusted_val() returns a plain int, calling a string
             # method on it would raise InterpreterError, an outcome the
             # generator has no ground truth for, so these are only ever
             # chosen once the tracked variable is actually a string.
@@ -188,7 +188,7 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             stmts.append(f"{var} = mix({var}, read_secret())")
             secret = True
         elif hop == "dictwrap":
-            # Value-side wrap/unwrap through a dict -- mirrors listwrap,
+            # Value-side wrap/unwrap through a dict, mirrors listwrap,
             # regression coverage for the read path that already worked
             # before dict iteration existed. Ground truth unchanged: a
             # dict value keeps its own precise tag through a subscript
@@ -196,7 +196,7 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
             stmts.append(f'{var} = {{"k": {var}, "other": trusted_val()}}["k"]')
         elif hop == "dict_key_roundtrip":
             # var becomes a dict *key* (mapped to an unrelated trusted
-            # value) and gets read back out via iteration -- the actual
+            # value) and gets read back out via iteration, the actual
             # new capability, not just the old value-reading path.
             # Single-entry dict, so the loop body runs exactly once;
             # ground truth unchanged if the key's own precise tag
@@ -217,19 +217,19 @@ def _generate_case(rng: random.Random) -> tuple[str, bool, bool]:
         elif hop == "func_wrap":
             # Passthrough hop shaped like "ordinary", but through a
             # user-defined call+return instead of a whitelisted
-            # function -- ground truth unchanged if trust/secrecy
+            # function, ground truth unchanged if trust/secrecy
             # survive a normal function call round trip.
             stmts.append(f"{var} = identity_func({var})")
         elif hop == "string_method_wrap":
             # Passthrough hop shaped like "ordinary", but through a
             # real Python str method's receiver position instead of a
-            # whitelisted function -- ground truth unchanged if
+            # whitelisted function, ground truth unchanged if
             # trust/secrecy propagate from the receiver correctly.
             stmts.append(f"{var} = {var}.upper()")
         elif hop == "string_method_arg_taint":
             # Mirrors the "mix_*" hops, but the tracked variable is the
             # *argument* to a method call instead of a plain function
-            # argument -- a fixed, unrelated trusted string is the
+            # argument, a fixed, unrelated trusted string is the
             # receiver, so any tag on the result can only have come
             # from var's own argument-position tag. Ground truth
             # unchanged: this is still just var's own existing tag,

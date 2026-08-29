@@ -56,7 +56,7 @@ def test_privileged_call_blocked_behind_an_untrusted_ternary_test():
     # The actual security question this addition raises: a privileged
     # call hiding inside a ternary branch, gated by an untrusted test,
     # must be caught the same way ast.If's own pc_trust already catches
-    # it for the statement form -- ast.IfExp is a different node and
+    # it for the statement form, ast.IfExp is a different node and
     # was never covered by that just because ast.If exists.
     def read_secret():
         return "untrusted"
@@ -92,7 +92,7 @@ def test_sink_call_blocked_behind_a_secret_ternary_test():
 def test_privileged_call_in_the_unchosen_ternary_branch_is_never_reached_so_never_blocked():
     # Mirrors the lazy-evaluation guarantee: a privileged call sitting
     # in the branch that ISN'T taken must not raise at all, since it
-    # never actually runs -- confirms blocking is about reachability,
+    # never actually runs, confirms blocking is about reachability,
     # not just syntactic presence in the source. Uses a trusted literal
     # test so this is cleanly about laziness alone, not entangled with
     # pc_trust gating a branch that actually gets reached (covered
@@ -115,7 +115,7 @@ def test_privileged_call_in_the_unchosen_ternary_branch_is_never_reached_so_neve
 def test_ternary_does_not_retroactively_taint_a_value_chosen_via_an_untrusted_test():
     # Consistency with ast.If's own documented choice: picking between
     # two already-safe values based on an untrusted condition doesn't
-    # itself taint the result -- matches ast.If not retroactively
+    # itself taint the result, matches ast.If not retroactively
     # tainting a plain assignment made inside a branch.
     def read_secret():
         return "untrusted"
@@ -208,7 +208,7 @@ def test_untrusted_argument_stays_tagged_inside_the_function_body():
 def test_privileged_call_inside_a_function_reached_via_an_untrusted_branch_is_blocked():
     # The actual security question this addition raises: a function
     # call is a continuation of the caller's own control-flow context,
-    # not a fresh entry point -- if the function body started fresh at
+    # not a fresh entry point, if the function body started fresh at
     # pc_trust=TRUSTED regardless of the untrusted branch that reached
     # it, an unconditional privileged call inside would run unblocked,
     # reopening the exact bug pc_trust exists to close, through a new
@@ -335,7 +335,7 @@ def test_calling_an_undefined_name_still_raises_the_original_error():
 
 def test_loop_inside_a_function_body_is_still_bounded_by_the_per_loop_cap():
     # Confirms the shared iteration budget and MAX_WHILE_ITERATIONS
-    # threading actually reach inside a function body -- if they
+    # threading actually reach inside a function body, if they
     # didn't, this loop would run to 10000 instead of being capped.
     with pytest.raises(InterpreterError):
         run(
@@ -377,7 +377,7 @@ def test_string_find_and_count():
 
 
 def test_string_split_returns_a_usable_list():
-    # split()'s result must come back as a real usable list -- not just
+    # split()'s result must come back as a real usable list, not just
     # the right value, but actually indexable/iterable the way any other
     # list literal is, confirming the auto-wrap path applied correctly.
     assert run('"a,b,c".split(",")[1]', {}) == "b"

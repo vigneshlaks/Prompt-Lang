@@ -1,4 +1,4 @@
-"""Tests for prompt_lang/approval.py -- the human-in-the-loop gate for
+"""Tests for prompt_lang/approval.py, the human-in-the-loop gate for
 the residual gap RetypingGuard and opaque handles both structurally
 cannot see: a value corrupted at its declassification source
 (describe_handle answering with the attacker's IBAN) and then used
@@ -25,7 +25,7 @@ def test_unflagged_call_never_invokes_approve():
 def test_flagged_value_as_positional_arg_triggers_approval():
     gate = ApprovalGate(approve=lambda r: True)
     gate.flag("US133000000121212121212", reason="describe_handle answer")
-    # Should not raise -- approve() returned True.
+    # Should not raise, approve() returned True.
     gate.check_call("send_money", ("US133000000121212121212",), {})
 
 
@@ -44,7 +44,7 @@ def test_flagged_value_embedded_in_a_larger_string_still_matches():
 
 
 def test_a_larger_flagged_value_matches_a_smaller_argument_containing_it():
-    # Mirrors RetypingGuard's own two-directional substring check --
+    # Mirrors RetypingGuard's own two-directional substring check:
     # matches whichever direction actually overlaps.
     gate = ApprovalGate(approve=lambda r: False)
     gate.flag("the IBAN is US133000000121212121212, use it", reason="describe_handle answer")
@@ -117,7 +117,7 @@ def test_wrap_for_approval_blocks_a_flagged_call_before_the_real_function_runs()
     )
     with pytest.raises(ApprovalDenied):
         wrapped["send_money"](recipient="US133000000121212121212", amount=500)
-    # The real function must never have run -- denial happens before commit.
+    # The real function must never have run, denial happens before commit.
     assert calls == []
 
 

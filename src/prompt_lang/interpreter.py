@@ -1,8 +1,8 @@
 """A safe core for evaluating expressions a language model writes. It
 never calls eval(). New statement types get added by extending
-eval_node/exec_stmt -- never by relaxing the whitelist check below.
+eval_node/exec_stmt, never by relaxing the whitelist check below.
 
-The one rule that has to hold no matter how much this grows: parsing
+The one rule that must hold no matter how much this grows: parsing
 uses only ast.parse, dispatch goes only through an explicit whitelist
 of node types and names, and eval() is never called on anything a
 model produced.
@@ -34,111 +34,89 @@ Grammar (informal EBNF):
     ternary    := expr "if" expr "else" expr
     literal    := NUMBER | STRING | "True" | "False" | "None"
 
-Note: method_call is only valid when expr evaluates to a string, and
-only for the fixed whitelist in _STRING_METHODS -- a runtime check,
-not grammar-enforced (same as "list index must be an integer").
+method_call is only valid when expr evaluates to a string, and only
+for the fixed whitelist in _STRING_METHODS. This is a runtime check,
+not grammar-enforced.
 
-Two separate namespaces: `allowed` (whitelisted callables, checked at
-call sites) and `env` (variables bound by assignment, checked at
-name-read sites). A bare reference to a whitelisted function name is
-not a variable read, and is rejected.
+Two namespaces: `allowed` (whitelisted callables, checked at call
+sites) and `env` (variables, checked at name-read sites). A bare
+reference to a whitelisted function name isn't a variable read, and
+is rejected.
 
-**Capability tracking.** Every value carries two independent tags,
-Trust (UNTRUSTED/TRUSTED) and Secrecy (SECRET/PUBLIC) -- independent
-because a value can be trustworthy but secret (an API key) or
-untrustworthy but not sensitive (an attacker's email body). Both are
-threaded through eval_node/exec_stmt directly, no side table.
+Capability tracking. Every value carries two tags: Trust
+(UNTRUSTED/TRUSTED) and Secrecy (SECRET/PUBLIC), independent because
+a value can be trustworthy but secret (an API key) or untrustworthy
+but harmless (an attacker's email body).
 
-- `sources`: return value always UNTRUSTED, regardless of arguments.
-- `privileged`: refuses to run (raises CapabilityError) if any
-  argument is UNTRUSTED, or if pc_trust is UNTRUSTED (see below).
-- `sanitizers`: return value always TRUSTED, regardless of arguments
-  -- the only way to turn UNTRUSTED back into TRUSTED. `sources` wins
-  if a name is listed in both.
-- `confidential`/`sinks`/`declassifiers`: the same three rules,
-  mirrored for Secrecy (ConfidentialityError instead of
-  CapabilityError). `confidential` wins over `declassifiers`.
-- An ordinary function (none of the above) propagates trust/secrecy
-  from its arguments: UNTRUSTED/SECRET in, UNTRUSTED/SECRET out,
+- `sources`: return value is always UNTRUSTED.
+- `privileged`: raises CapabilityError if any argument is UNTRUSTED,
+  or if pc_trust is UNTRUSTED.
+- `sanitizers`: return value is always TRUSTED. `sources` wins if a
+  name is listed in both.
+- `confidential`/`sinks`/`declassifiers`: the same rules for Secrecy
+  (ConfidentialityError instead). `confidential` wins over
+  `declassifiers`.
+- An ordinary function propagates trust/secrecy from its arguments,
   through any chain of calls.
 
-The six sets are bundled into one `_Capabilities` object rather than
-six separate parameters, so a positional-argument mistake at a
-recursive call site can't silently drop one check with no error.
+The six sets are bundled into one `_Capabilities` object so a
+positional-argument mistake can't silently drop a check.
 
-**Loop bounds.** MAX_WHILE_ITERATIONS caps one loop. A shared
-`_IterationBudget`, created once per run() call and threaded through
-every exec_stmt call, caps total iterations across the whole program
--- so nested loops can't each individually stay under the per-loop cap
-while multiplying past a sane total.
+Loop bounds. MAX_WHILE_ITERATIONS caps one loop. A shared
+`_IterationBudget`, created once per run() call, caps total
+iterations across the whole program, so nested loops can't multiply
+past it.
 
-**Containers.** Lists/dicts carry trust and secrecy per element, not
-one tag for the whole collection: a list stores (value, Trust,
-Secrecy) triples; a dict stores a
+Containers. Lists/dicts carry trust and secrecy per element: a
+list stores (value, Trust, Secrecy) triples; a dict stores a
 (value, value_trust, value_secrecy, key_trust, key_secrecy) 5-tuple
-per entry (the key itself stays a bare raw value, since real dict
-lookup needs it to equal what a caller looks up). `for key in
-some_dict:` gives each key its own key_trust/key_secrecy, not one
-aggregate tag for the dict. A plain list/dict returned by a whitelisted
-function gets auto-wrapped: every element takes the call's own
-trust/secrecy uniformly, since the interpreter never watched it get
-built; a function needing real per-element precision can opt out by
-returning already-tagged pairs itself.
+per entry (the key stays a bare raw value, since lookup needs it to
+match what a caller looks up). A plain list/dict returned by a
+whitelisted function gets auto-wrapped with the call's own
+trust/secrecy; a function needing real per-element precision can
+return already-tagged pairs instead. A sanitizer clears only the
+*outer* tag on what it returns; `_has_untrusted`/`_has_secret` check
+recursively, so a container can't be laundered by clearing just its
+top-level label.
 
-A sanitizer/declassifier clears only the *outer* tag on whatever it
-returns -- if it passes a tagged container through unchanged, nested
-elements keep their own tags. `_has_untrusted`/`_has_secret` check
-recursively everywhere an argument is inspected, so a container can't
-be laundered by clearing just its top-level label.
+Implicit flow (pc_trust/pc_secrecy). Explicit-flow checking alone
+misses a tagged value that decides which branch runs without
+appearing as an argument. Entering an if/while/for whose condition or
+iterable was UNTRUSTED (or SECRET) raises pc_trust (or pc_secrecy)
+for that block; a privileged/sink call made under a raised pc is
+refused regardless of its own arguments. This is deliberately narrow:
+it gates privileged/sink calls only, and doesn't retroactively taint
+every value computed under a raised pc. (Full implicit-flow tracking
+tends to be too restrictive to use; most practical taint trackers
+don't attempt it either.)
 
-**Implicit flow (pc_trust/pc_secrecy).** Explicit-flow checking alone
-misses a tagged value that decides which branch runs without ever
-appearing as an argument. Every eval_node/exec_stmt call threads a
-pc_trust/pc_secrecy value -- the trust/secrecy of the control flow
-that led here. Entering an if/while/for whose condition or iterable
-was UNTRUSTED (or SECRET) raises pc_trust (or pc_secrecy) for that
-block; a privileged/sink call made under a raised pc is refused
-regardless of its own arguments. Deliberately narrow: this gates
-privileged/sink calls only, it doesn't retroactively taint every value
-computed under a raised pc (most practical taint trackers don't
-attempt that either, since it tends to make a system too restrictive
-to use).
-
-**Operators.** Arithmetic/comparison/boolean results combine (join)
-their operands' trust and secrecy. `and`/`or`/chained comparisons
-short-circuit like real Python -- an operand skipped by short-circuit
-never contributes a tag. `**` additionally caps the exponent's
+Operators. Results join their operands' trust and secrecy.
+`and`/`or`/chained comparisons short-circuit like real Python, so a
+skipped operand contributes no tag. `**` caps the exponent's
 magnitude (MAX_EXPONENT) before running, since a huge exponent can
-hang the process with no loop for MAX_WHILE_ITERATIONS to bound and
-no exception to catch. A malformed operation (divide by zero, etc.)
+hang the process with no loop to bound it. A malformed operation
 raises whatever ordinary Python exception it would outside this
-interpreter -- the whitelist boundary governs what's allowed to run,
-not every mistake a legal operation can still make.
+interpreter.
 
-**run() vs. Session/run_turn().** run() executes a whole program
-blind (the model writes every statement before any run). Session/
-run_turn() run one statement at a time against persisted state (env,
-budget), so a driving harness can show a real result before the next
-statement. pc_trust/pc_secrecy reset fresh for each run_turn() call,
-the same as every top-level statement already resets them inside a
-single run() call. A Session's budget is shared across turns the same
-way run()'s budget is shared across loops in one program.
+run() vs. Session/run_turn(). run() executes a whole program
+blind, written before any of it runs. Session/run_turn() run one
+statement at a time against persisted state (env, budget), so a
+driving harness can show a real result before the next statement.
+pc_trust/pc_secrecy reset fresh each turn, same as every statement
+inside a single run() call, and a Session's budget is shared across
+turns the same way run()'s is shared across loops.
 
-**Function definitions** (`def name(params): body`) are deliberately
-minimal: positional parameters only, no defaults/*args/**kwargs/
-keyword-only/decorators/return-type annotation, no `return` statement
--- a function's result is whatever its last statement evaluates to,
-the same convention run()/if/while/for already use. A name colliding
-with an `allowed` entry is rejected at definition time. A function
-body runs against a fresh, isolated local env -- no closures, no
-access to the caller's variables. Recursion (direct or mutual) is
-refused outright rather than depth-limited, since nothing else bounds
-Python's own call-stack depth. A function call inherits the call
-site's own pc_trust/pc_secrecy into its body (not reset to
-TRUSTED/PUBLIC) -- it's a continuation of the caller's control-flow
-context, not a fresh entry point the way run()/run_turn() top-level
-statements are; skipping this would let `if untrusted_cond: my_func()`
-run an unconditional privileged call inside my_func() unblocked.
+Function definitions (`def name(params): body`) are deliberately
+minimal: positional parameters only, no `return` statement (a
+function's result is its last statement's value, like
+run()/if/while/for). A name colliding with an `allowed` entry is
+rejected at definition time. A function body runs against a fresh,
+isolated local env, no closures. Recursion is refused outright, since
+nothing else bounds Python's own call-stack depth. A function call
+inherits the call site's pc_trust/pc_secrecy rather than resetting
+it, since it's a continuation of the caller's control flow, not a
+fresh entry point; otherwise `if untrusted_cond: my_func()` could run
+an unconditional privileged call inside my_func() unblocked.
 """
 
 from __future__ import annotations
@@ -180,12 +158,12 @@ _STRING_METHODS: frozenset[str] = frozenset({
     "replace", "split", "find", "count",
 })
 # Deliberately excluded, not just not-yet-added:
-#   format/format_map -- format-string injection ("{0.__class__}").
-#   encode/decode -- no bytes type in this language's value model.
-#   join -- takes an iterable argument whose elements would each need
+#   format/format_map: format-string injection ("{0.__class__}").
+#   encode/decode: no bytes type in this language's value model.
+#   join: takes an iterable argument whose elements would each need
 #     their own trust/secrecy; every method here takes only plain
 #     string/int arguments.
-#   any regex method -- catastrophic backtracking is a resource-
+#   any regex method: catastrophic backtracking is a resource-
 #     exhaustion vector MAX_WHILE_ITERATIONS/MAX_EXPONENT don't cover.
 
 _UNARY_OPS: dict[type, Callable[[Any], Any]] = {
@@ -354,13 +332,13 @@ def _call_string_method(
 ) -> tuple[Any, Trust, Secrecy]:
     """Calls a whitelisted method (`_STRING_METHODS`) on a string
     value, e.g. `transaction.date.startswith("2022-03")`. Scoped to
-    strings only -- `isinstance(obj, str)` below is the real security
-    boundary: it stops this from becoming "call any method on any
+    strings only: `isinstance(obj, str)` below is the real security
+    boundary. It stops this from becoming "call any method on any
     object" (a real returned object could carry unaudited side
     effects) and stops it reaching a *tagged* list/dict, where a
     mutating method would corrupt the tagged-triple/5-tuple invariant.
-    No pc_trust/pc_secrecy inheritance needed, unlike function calls
-    -- these are pure real `str` methods with no access to
+    No pc_trust/pc_secrecy inheritance needed, unlike function calls:
+    these are pure real `str` methods with no access to
     `allowed`/`caps`, so none can hide a privileged/sink call. Result
     trust/secrecy is the join of the receiver's and every argument's
     tags, same rule as ast.BinOp/ast.Compare."""
@@ -415,7 +393,7 @@ def _is_tagged_dict(value: Any) -> bool:
     builds: every value is a
     (value, value_trust, value_secrecy, key_trust, key_secrecy)
     5-tuple. Empty dict counts as tagged, vacuously. The key itself
-    stays raw (unwrapped) -- see module docstring's "Containers"."""
+    stays raw (unwrapped); see module docstring's "Containers"."""
     return isinstance(value, dict) and all(
         isinstance(v, tuple)
         and len(v) == 5
@@ -429,7 +407,7 @@ def _is_tagged_dict(value: Any) -> bool:
 
 def _contains(a: Any, b: Any) -> bool:
     """Implements `a in b`. A tagged list's elements are triples, not
-    bare values, so they're unwrapped before comparing -- plain
+    bare values, so they're unwrapped before comparing. Plain
     Python `in` would otherwise always return False. Dict keys and
     strings are never wrapped, so they fall through unchanged."""
     if _is_tagged_list(b):
@@ -452,8 +430,8 @@ def unwrap_value(value: Any) -> Any:
 
 def _has_untrusted(value: Any, trust: Trust) -> bool:
     """True if trust is UNTRUSTED, or value is a tagged list/dict with
-    an untrusted element anywhere, recursively -- the laundering check
-    from module docstring's "Containers", used everywhere an
+    an untrusted element anywhere, recursively. This is the laundering
+    check from module docstring's "Containers", used everywhere an
     argument's trust is inspected."""
     if trust == Trust.UNTRUSTED:
         return True
@@ -496,8 +474,8 @@ def eval_node(
     """Evaluates a single expression node. Each case is explicit;
     anything else raises rather than falling back to a general
     evaluator. Returns (value, trust, secrecy), never a bare value.
-    pc_trust/pc_secrecy are the control flow's own tags that led here
-    -- see module docstring's "Implicit flow"."""
+    pc_trust/pc_secrecy are the control flow's own tags that led here;
+    see module docstring's "Implicit flow"."""
     if isinstance(node, ast.Call):
         if isinstance(node.func, ast.Attribute):
             return _call_string_method(node, allowed, env, caps, pc_trust, pc_secrecy, functions)
@@ -541,7 +519,7 @@ def eval_node(
         # External functions see/return plain values only. If a
         # function hands back the exact same list/dict object it was
         # given (identity, not equality), its original per-element
-        # tags are restored below instead of auto-wrapping -- auto-
+        # tags are restored below instead of auto-wrapping. Auto-
         # wrap would relabel every nested element with the call's
         # outer trust and launder anything still untrusted/secret
         # inside. Scoped to this one call, by object identity; doesn't
@@ -626,7 +604,7 @@ def eval_node(
                 break
         return result, result_trust, result_secrecy
     if isinstance(node, ast.IfExp):
-        # Ternary -- the expression-level twin of ast.If's
+        # Ternary, the expression-level twin of ast.If's
         # implicit-flow protection, applied to whichever single branch
         # is actually evaluated (lazy, so the unchosen branch's side
         # effects never run). The chosen branch's own trust/secrecy is
@@ -714,7 +692,7 @@ def eval_node(
             return value, value_trust, value_secrecy
         raise InterpreterError(
             "subscripting requires a list or dict built with a literal (or "
-            "a function in `allowed` returning one) -- a plain value has "
+            "a function in `allowed` returning one); a plain value has "
             "no per-element trust or secrecy to read"
         )
     if isinstance(node, ast.Attribute):
@@ -729,7 +707,7 @@ def eval_node(
         # access. Dunder/private names are still blocked below as
         # defense in depth (__dict__, __class__, and a property/
         # __getattr__ override running code as a side effect of a plain
-        # read) -- a real but currently unmitigated risk this project's
+        # read), a real but currently unmitigated risk this project's
         # own tools (dataclasses, pydantic models) don't exercise.
         obj, trust, secrecy = eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
         if node.attr.startswith("_"):
@@ -740,7 +718,7 @@ def eval_node(
             raise InterpreterError(f"{type(obj).__name__!r} object has no attribute {node.attr!r}") from exc
         if callable(value):
             raise InterpreterError(
-                f"attribute {node.attr!r} is a method, not a field -- method calls are not supported"
+                f"attribute {node.attr!r} is a method, not a field: method calls are not supported"
             )
         return value, trust, secrecy
     raise InterpreterError(f"unsupported expression: {ast.dump(node)}")
@@ -813,12 +791,12 @@ def exec_stmt(
         elif _is_tagged_dict(iterable):
             # Iterates keys, matching Python's `for x in some_dict:`.
             # Each key keeps its own trust/secrecy, not the dict's
-            # aggregate tag -- see _is_tagged_dict's docstring.
+            # aggregate tag; see _is_tagged_dict's docstring.
             tagged = [(key, key_trust, key_secrecy) for key, (_, _, _, key_trust, key_secrecy) in iterable.items()]
         else:
             raise InterpreterError(
                 "a for loop's iterable requires a list or dict built with a "
-                "literal (or a function in `allowed` returning one) -- a "
+                "literal (or a function in `allowed` returning one); a "
                 "plain value has no per-element trust or secrecy to read"
             )
         body_pc_trust = Trust.UNTRUSTED if pc_trust == Trust.UNTRUSTED or iterable_trust == Trust.UNTRUSTED else Trust.TRUSTED
@@ -834,7 +812,7 @@ def exec_stmt(
     if isinstance(node, ast.Expr):
         return eval_node(node.value, allowed, env, caps, pc_trust, pc_secrecy, functions)
     if isinstance(node, ast.FunctionDef):
-        # `def name(params): body` -- plain positional parameters only,
+        # `def name(params): body`: plain positional parameters only,
         # no defaults/*args/**kwargs/keyword-only/decorators/return-
         # type annotation, and no `return` statement. A function's
         # result is whatever its last statement evaluates to, the same
@@ -847,12 +825,12 @@ def exec_stmt(
         if args.vararg or args.kwarg or args.kwonlyargs or args.posonlyargs or args.defaults or args.kw_defaults:
             raise InterpreterError(
                 "function definitions only support plain positional "
-                "parameters -- no *args, **kwargs, keyword-only "
+                "parameters, no *args, **kwargs, keyword-only "
                 "parameters, or default values"
             )
         if node.name in allowed:
             raise InterpreterError(
-                f"cannot define a function named {node.name!r} -- it "
+                f"cannot define a function named {node.name!r}: it "
                 "collides with a whitelisted name"
             )
         if functions is None:

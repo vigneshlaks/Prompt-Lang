@@ -1,16 +1,16 @@
-"""Turn-by-turn feasibility harness. feasibility_test.py has the model
+"""Turn-by-turn feasibility harness. feasibility_live.py has the model
 write a whole program in one shot and executes it with run(). This
 instead asks for one statement at a time, executes each with
 Session/run_turn, and shows the real result back before asking for the
-next statement -- testing the actual claim turn-by-turn execution
+next statement, testing the actual claim turn-by-turn execution
 makes: that a model can use real data mid-task to make a judgment call
 a single pre-written comparison couldn't express.
 
-Requires Ollama running locally, same as feasibility_test.py.
+Requires Ollama running locally, same as feasibility_live.py.
 
 Usage (from the repo root):
-    python3 experiments/turn_by_turn_test.py
-    python3 experiments/turn_by_turn_test.py --models llama3.2:3b qwen2.5:3b --reps 3
+    python3 experiments/turn_by_turn_live.py
+    python3 experiments/turn_by_turn_live.py --models llama3.2:3b qwen2.5:3b --reps 3
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ from typing import Any, Callable
 
 import requests
 
-sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 
 from prompt_lang.interpreter import InterpreterError, Session, run_turn, unwrap_value
 from prompt_lang.tools import interpret
@@ -51,14 +51,14 @@ literal    := NUMBER | STRING | "True" | "False" | "None"
 """
 
 FEW_SHOT = """\
-Example, for illustration only -- get_score/pass_test/fail_test are NOT \
+Example, for illustration only, get_score/pass_test/fail_test are NOT \
 available for your actual task below; use only the function names \
 listed under "available functions" for your task instead.
 
 Example task: "Check the score with get_score(). If it is at least 50, \
 call pass_test(). Otherwise call fail_test()."
 
-Turn 1 -- nothing has run yet. A real Python if/else block, using a \
+Turn 1, nothing has run yet. A real Python if/else block, using a \
 colon and indentation, counts as ONE statement, so it can be written \
 in a single turn:
 if get_score() >= 50:
@@ -66,11 +66,11 @@ if get_score() >= 50:
 else:
     fail_test()
 
-Turn 2 -- the result above showed pass_test() was called and the task \
+Turn 2, the result above showed pass_test() was called and the task \
 is done, so the next response is exactly:
 DONE
 
-A second example, also for illustration only -- read_note/interpret/ \
+A second example, also for illustration only, read_note/interpret/ \
 file_it/flag_it are NOT available for your actual task either. This \
 one shows how to use interpret(text, question): it must NEVER be \
 nested inside another call or inside an if condition in the same \
@@ -81,18 +81,18 @@ Example task: "Read the note with read_note(). Use interpret(text, \
 question) to figure out what category it is about. If it is about \
 'billing', call file_it(). Otherwise call flag_it()."
 
-Turn 1 -- nothing has run yet. Read the note and store it:
+Turn 1, nothing has run yet. Read the note and store it:
 note = read_note()
 
-Turn 2 -- the result above showed the real note text. Interpret it \
-and store that too, in its own turn -- do not put read_note() or the \
+Turn 2, the result above showed the real note text. Interpret it \
+and store that too, in its own turn, do not put read_note() or the \
 if-check in this same statement:
 category = interpret(note, "what category is this note about?")
 
-Turn 3 -- the result above showed the real category text. Now branch \
+Turn 3, the result above showed the real category text. Now branch \
 on it. Prefer "in" over "==" whenever checking what interpret() said, \
 since interpret()'s answer is a full sentence you did not write \
-yourself -- matching a keyword with "in" works regardless of the exact \
+yourself, matching a keyword with "in" works regardless of the exact \
 wording, while "==" requires copying its answer character-for-character, \
 which silently breaks if that answer contains a quote character:
 if "billing" in category:
@@ -100,7 +100,7 @@ if "billing" in category:
 else:
     flag_it()
 
-Turn 4 -- the task is done, so the next response is exactly:
+Turn 4, the task is done, so the next response is exactly:
 DONE
 """
 
@@ -243,9 +243,9 @@ def call_model(model: str, prompt: str, timeout: float = 120.0) -> str:
 
 
 def _turn_display_result(stmt: str, result: Any, session: Session) -> Any:
-    """run_turn() returns None for a plain assignment statement -- real
-    Python semantics, assignment has no value, see
-    prompt_lang/interpreter.py's ast.Assign case -- but the model still
+    """run_turn() returns None for a plain assignment statement (real
+    Python semantics: assignment has no value; see
+    prompt_lang/interpreter.py's ast.Assign case), but the model still
     needs to see what actually got bound to reason about it on a later
     turn. For a single `NAME = expr` statement, show the real bound
     value from the session's env instead of the discarded None. Found
@@ -254,14 +254,14 @@ def _turn_display_result(stmt: str, result: Any, session: Session) -> Any:
     real data across either statement, so a later `if interpretation
     == "...":` turn was written entirely blind, on any model size.
 
-    session.env[name][0] is only the outer unwrap -- the same gap
+    session.env[name][0] is only the outer unwrap, the same gap
     unwrap_value() was built to close for external calls and for
     run()/run_turn()'s own return, found live a second time in a third
     location via a real AgentDojo attempt: a model assigned a list of
     Transaction objects to a variable, was shown that list still
     containing raw (value, Trust, Secrecy) triples in the turn history,
     and reasonably (but wrongly) concluded every element of a `for`
-    loop over it would need an extra `[0]` to unwrap -- because that is
+    loop over it would need an extra `[0]` to unwrap, because that is
     literally the shape it had been shown. Applying unwrap_value() here
     closes the same class of leak at the one boundary that was still
     open: what the harness itself displays back to the model.

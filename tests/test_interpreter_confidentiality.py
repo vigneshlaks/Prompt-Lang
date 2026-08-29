@@ -1,6 +1,6 @@
 """Deterministic tests for confidentiality/secrecy propagation
-(confidential, sinks, declassifiers) -- the mirror image of
-test_interpreter_core.py's integrity tests -- plus the adversarial
+(confidential, sinks, declassifiers), the mirror image of
+test_interpreter_core.py's integrity tests, plus the adversarial
 container-laundering tests for both trust and secrecy. Split out of
 the original test_interpreter.py; see test_interpreter_core.py's own
 docstring for why.
@@ -74,7 +74,7 @@ def test_declassifying_a_dict_does_not_launder_a_secret_value_inside_it():
 
 # pc_secrecy: the confidentiality mirror of pc_trust. A secret value can
 # still decide which branch runs, leaking information through which sink
-# call fires, even when neither call takes a secret argument directly --
+# call fires, even when neither call takes a secret argument directly:
 # this used to be an open, documented gap; now it's a closed one.
 
 
@@ -149,7 +149,7 @@ def test_sink_call_blocked_inside_a_for_loop_over_a_secret_iterable():
 
 # Adversarial: a sanitizer clears the outer trust tag on whatever it
 # returns, but if it just passes a tagged list through unchanged, the
-# elements inside keep their own tags -- this checks that a container
+# elements inside keep their own tags, this checks that a container
 # can't launder an untrusted element by clearing just the outer label.
 
 
@@ -245,7 +245,7 @@ def test_sanitizing_a_fully_trusted_list_still_works_normally():
         privileged=frozenset({"approve"}),
     )
     # approve is a real external function here (standing in for
-    # something like a real privileged tool) -- it must receive real
+    # something like a real privileged tool), it must receive real
     # unwrapped values, [1, 2], not this interpreter's own internal
     # (value, Trust, Secrecy) triples. The point of this test is still
     # the over-restriction direction (a fully trusted list must not be
@@ -255,7 +255,7 @@ def test_sanitizing_a_fully_trusted_list_still_works_normally():
 
 
 # Adversarial: untrusted data can decide which branch runs without ever
-# being passed as an argument -- implicit flow, not explicit data flow.
+# being passed as an argument, implicit flow, not explicit data flow.
 # A privileged call inside that branch had nothing to check, since it
 # received no untrusted argument at all. Found by deliberately trying to
 # get a zero-argument privileged call to run based on untrusted content,

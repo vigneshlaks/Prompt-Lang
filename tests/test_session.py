@@ -1,4 +1,4 @@
-"""Tests for Session/run_turn -- incremental, turn-by-turn execution as
+"""Tests for Session/run_turn, incremental, turn-by-turn execution as
 an alternative to run()'s write-the-whole-program-blind model. These
 don't test eval_node/exec_stmt again; they test that persistent state
 (env, the iteration budget) and the security guarantees already proven
@@ -23,7 +23,7 @@ def test_env_accumulates_across_turns():
 
 def test_a_later_turn_can_be_chosen_from_an_earlier_turns_real_result():
     # The actual point of this mechanism: the driver sees the real
-    # return value of one turn before deciding what to submit next --
+    # return value of one turn before deciding what to submit next:
     # something run() structurally can't offer, since the whole program
     # is written before any of it executes.
     session = Session()
@@ -73,7 +73,7 @@ def test_trusted_value_across_turns_is_not_blocked():
 def test_budget_is_shared_across_turns_not_reset_each_one():
     # The cross-turn analog of the nested-loop-budget finding: many
     # turns, each individually well under the per-loop cap, must still
-    # be caught in total by one shared budget -- not given a fresh
+    # be caught in total by one shared budget, not given a fresh
     # budget every turn, which would let them multiply past it the same
     # way nested loops within one run() call used to.
     session = Session(budget_limit=100)
@@ -141,7 +141,7 @@ def test_two_sessions_are_independent():
 
 def test_function_defined_in_one_turn_can_be_called_in_a_later_turn():
     # Function definitions persist across turns the same way env and
-    # the budget already do -- Session.functions mirrors Session.budget.
+    # the budget already do, Session.functions mirrors Session.budget.
     session = Session()
     run_turn(session, "def add(a, b):\n    a + b", {})
     result = run_turn(session, "add(2, 3)", {})

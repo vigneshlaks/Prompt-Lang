@@ -1,11 +1,11 @@
 """Opaque-handle confinement for `sources` functions, adapted from
-SecureClaw's read-path design (Ma & Schmid, arXiv:2606.09549) -- an
+SecureClaw's read-path design (Ma & Schmid, arXiv:2606.09549), an
 adopted mechanism, not an original one.
 
 The gap: interpreter.py's trust/secrecy tags only see explicit and
 implicit *data flow* through tracked variables. They have nothing to
 see when a model reads untrusted text and retypes a value from it as
-a fresh literal -- there's no data-flow edge for a literal to leave
+a fresh literal. There's no data-flow edge for a literal to leave
 (see defenses.py's module docstring for the concrete example).
 defenses.RetypingGuard catches that heuristically, after the fact, by
 pattern-matching literals against recently-seen text. SecureClaw's own
@@ -18,7 +18,7 @@ retyped literal, it removes the raw value from the model's reach, so
 there's nothing to retype in the first place.
 
 A `sources` function wrapped with wrap_sources_for_handles() returns a
-Handle -- an opaque token, not the content. A `privileged`/`sinks`
+Handle, an opaque token, not the content. A `privileged`/`sinks`
 function wrapped with wrap_privileged_for_handles() transparently
 resolves a Handle argument to its real value from a shared
 HandleStore immediately before calling the real function, checked
@@ -36,7 +36,7 @@ never on the Handle object itself.
 What this module does NOT attempt: SecureClaw's HMAC-signed binding
 digest, freshness/replay protection, and confirmation tokens on the
 write path. Those defend a compromised, out-of-process executor
-against a replayed or tampered request -- prompt-lang's interpreter
+against a replayed or tampered request. prompt-lang's interpreter
 already prevents the model from calling a real function directly
 (every call dispatches from a freshly-evaluated ast.Call node), so
 there's no separate request object to mutate and no replay surface.
@@ -46,7 +46,7 @@ approximation of SecureClaw's own version, and that gap is real:
 their summary is a deterministic, schema-aware operator with explicit
 caps, incapable of being talked into revealing more than the schema
 allows. describe_handle() instead asks an LLM a freeform question
-about the real content and truncates the answer -- a sufficiently
+about the real content and truncates the answer. A sufficiently
 adversarial question, or injected content the call is exposed to,
 could still coax more out of it than intended. Kept anyway, because a
 handle system with no way to reason about content can't support any
@@ -56,7 +56,7 @@ mitigation, not a rigorous declassification channel.
 make_extract_field() closes that gap for the common case: a
 deterministic, schema-aware field extractor, the actual mechanism
 SecureClaw's paper describes, not a weaker stand-in. No LLM call at
-all -- a fixed regex per known field type (`iban`, `amount`, `date`)
+all: a fixed regex per known field type (`iban`, `amount`, `date`)
 runs directly against the real content, so there's no natural-language
 step for an attacker to manipulate. Preferred whenever the task is
 "pull out the IBAN/amount/date"; describe_handle() remains for
@@ -83,7 +83,7 @@ class HandleAccessDenied(Exception):
 class Handle:
     """An opaque, unforgeable reference to a real value held outside
     the model's reach. `id` is a high-entropy token (see
-    HandleStore.mint), not a hash of the real value -- it carries no
+    HandleStore.mint), not a hash of the real value: it carries no
     information about what it points to. The only field on this
     object is public and harmless to expose. The real value is never
     an attribute of a Handle."""
@@ -95,7 +95,7 @@ class HandleStore:
     """Holds real values behind opaque tokens, and the per-handle
     policy of which sinks may dereference each one. One store per
     run/session, the same way RetypingGuard and Session are scoped.
-    Never shared across independent runs -- a shared store would let
+    Never shared across independent runs, a shared store would let
     one task's handles be dereferenced by another's calls."""
 
     def __init__(self):
@@ -106,7 +106,7 @@ class HandleStore:
         """Stores value and returns an opaque Handle for it.
         allowed_sinks is the set of privileged/sinks function names
         permitted to dereference this specific handle. None means any
-        sink may -- the default, since a first version has to start
+        sink may, the default, since a first version has to start
         somewhere. A real deployment would classify this per source,
         the same way `sources`/`privileged`/etc. are classified per
         task today."""
@@ -120,7 +120,7 @@ class HandleStore:
         authorized to dereference it. Raises HandleAccessDenied
         otherwise. An unknown handle (never minted by this store, or a
         forged id) and a handle whose policy excludes this sink are
-        both refused the same way -- distinguishing them in the error
+        both refused the same way, distinguishing them in the error
         would tell an adversary which handles are real."""
         if handle.id not in self._values:
             raise HandleAccessDenied("unknown handle")
@@ -131,8 +131,8 @@ class HandleStore:
 
     def peek(self, handle: Handle) -> Any:
         """Returns the real value with no sink policy check. For
-        describe_handle()'s use only -- summarizing isn't dereferencing
-        at a sink, it's the declassification interface itself -- never
+        describe_handle()'s use only, summarizing isn't dereferencing
+        at a sink, it's the declassification interface itself, never
         for a privileged/sinks wrapper. Raises HandleAccessDenied for
         an unknown handle, same as resolve()."""
         if handle.id not in self._values:
@@ -180,7 +180,7 @@ def wrap_privileged_for_handles(
     privileged/sinks entries transparently resolve any Handle argument
     to its real value (policy-checked against that handle's own
     allowed_sinks), immediately before calling the real underlying
-    function. A plain, non-Handle argument passes through unchanged --
+    function. A plain, non-Handle argument passes through unchanged:
     this only affects calls that actually carry a handle.
     HandleAccessDenied propagates out of the call the same way any
     other rejection from a wrapped function does."""
@@ -214,7 +214,7 @@ def wrap_for_opaque_handles(
     allowed_sinks: frozenset[str] | None = None,
 ) -> dict[str, Callable]:
     """Convenience: applies both wraps in one call, the shape a driving
-    harness actually wants -- sources mint handles, privileged/sinks
+    harness actually wants. Sources mint handles; privileged/sinks
     transparently resolve them, both against the same store."""
     wrapped = wrap_sources_for_handles(allowed, sources, store, allowed_sinks)
     return wrap_privileged_for_handles(wrapped, privileged, sinks, store)
@@ -236,8 +236,8 @@ def _spotlight(text: str, question: str) -> tuple[str, str]:
     interpret()'s single-string call signature. Applied here even
     though the same instruction text measured no difference against
     this attack class elsewhere in this project (6/6 complied with or
-    without it, see experiments/describe_handle_isolation_test.py) --
-    a known-weak defense is still applied honestly, not skipped
+    without it, see experiments/describe_handle_isolation_live.py).
+    A known-weak defense is still applied honestly, not skipped
     silently, since describe_handle's model call is the one channel in
     this design with no other defense on it at all."""
     return f"<<{text}>>", _SPOTLIGHT_INSTRUCTION + question
@@ -249,7 +249,7 @@ def make_describe_handle(
     max_chars: int = 200,
 ) -> Callable[[Handle, str], str]:
     """Returns a describe_handle(handle, question) function for a
-    program's `allowed` dict, meant to be listed under `sources` --
+    program's `allowed` dict, meant to be listed under `sources`:
     its answer is still UNTRUSTED and still checked by
     defenses.RetypingGuard downstream; this is a weaker, approximate
     declassification channel, not a replacement for either. `ask` is
@@ -269,13 +269,13 @@ def make_describe_handle(
     return describe_handle
 
 
-# Deliberately small -- the banking scenario's IBAN/amount/date, not a
+# Deliberately small: the banking scenario's IBAN/amount/date, not a
 # general-purpose field library. Patterns match shape, not format
 # validity (e.g. `iban` accepts "UK12345678901234567890", not a real
 # ISO 3166 code): the extractor's job is finding what's shaped like the
 # field asked for, not authenticating that it's genuine. A well-formed
-# decoy an attacker plants is still well-formed -- why every match is
-# returned, not just the first, and why the result stays UNTRUSTED.
+# decoy an attacker plants is still well-formed. That's why every match
+# is returned, not just the first, and why the result stays UNTRUSTED.
 _FIELD_PATTERNS: dict[str, re.Pattern[str]] = {
     "iban": re.compile(r"\b[A-Z]{2}\d{2}[A-Z0-9]{10,30}\b"),
     "amount": re.compile(r"\b\d+\.\d{1,2}\b"),
@@ -287,7 +287,7 @@ MAX_FIELD_MATCHES = 20
 
 def make_extract_field(store: HandleStore) -> Callable[[Handle, str], list[str]]:
     """Returns an extract_field(handle, field) function for a
-    program's `allowed` dict, meant to be listed under `sources` --
+    program's `allowed` dict, meant to be listed under `sources`:
     its result is always UNTRUSTED, same as describe_handle(). `field`
     must be one of `_FIELD_PATTERNS`' keys; anything else raises
     immediately rather than returning an empty result that could be
@@ -296,7 +296,7 @@ def make_extract_field(store: HandleStore) -> Callable[[Handle, str], list[str]]
     Returns every match, not just the first (see module docstring),
     capped at MAX_FIELD_MATCHES so field-shaped decoys can't produce
     an unbounded result. No `ask` parameter, unlike
-    make_describe_handle -- no model call happens anywhere here."""
+    make_describe_handle, no model call happens anywhere here."""
 
     def extract_field(handle: Handle, field: str) -> list[str]:
         if field not in _FIELD_PATTERNS:

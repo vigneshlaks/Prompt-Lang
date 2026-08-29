@@ -49,11 +49,11 @@ def test_nested_loops_cannot_multiply_past_the_total_iteration_budget():
 
 def test_list_literal_returned_from_run_is_unwrapped_to_plain_values():
     # eval_node's own internal representation of a list is still a list
-    # of (value, Trust, Secrecy) triples -- unchanged, and still what
+    # of (value, Trust, Secrecy) triples, unchanged, and still what
     # list-of-tests below exercise indirectly. What changed: run() is a
     # real external boundary, documented ("the Trust and Secrecy tags
     # are unwrapped here, not exposed to callers") to hand back plain
-    # values, the same as it always did for a bare scalar -- this was
+    # values, the same as it always did for a bare scalar, this was
     # never actually true for a list/dict result until now. Found live
     # while wiring real external functions (AgentDojo's real tools) that
     # take list arguments: a caller receiving prompt-lang's own internal
@@ -71,7 +71,7 @@ def test_ordinary_function_receives_real_unwrapped_list_values():
     # A real external function (this stub stands in for something like
     # a real AgentDojo tool taking `restaurant_names: list[str]`) must
     # receive actual Python values, not this interpreter's own internal
-    # (value, Trust, Secrecy) triples -- discovered live wiring up real
+    # (value, Trust, Secrecy) triples, discovered live wiring up real
     # AgentDojo tools that take list arguments, where a pydantic
     # ValidationError on every element was the first sign something was
     # leaking internal bookkeeping across the call boundary.
@@ -445,7 +445,7 @@ def test_privileged_call_blocked_using_an_untrusted_dict_key_from_iteration():
 
 
 def test_dict_with_an_untrusted_key_is_caught_when_passed_wholesale_too():
-    # Not just iteration -- passing the whole dict directly to a
+    # Not just iteration, passing the whole dict directly to a
     # privileged call must also see the untrusted key, the same
     # container-laundering check already applied to values.
     def read_untrusted_key():

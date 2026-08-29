@@ -212,7 +212,7 @@ def test_write_then_read_own_shared_value_still_blocked_from_privileged_op():
 
 # Multi-agent semantics: does the tag survive through a second agent's
 # own separate run() call reading, reprocessing, and rewriting shared
-# data -- not just one run() call reading its own write, which is all
+# data, not just one run() call reading its own write, which is all
 # the tests above cover.
 
 
@@ -240,7 +240,7 @@ def test_tag_survives_a_second_agents_separate_run_reading_the_first_agents_writ
 
 
 def test_tag_does_not_survive_through_a_sanitizer_across_the_write_read_boundary():
-    # A store only holds a bare Python value -- write_shared receives it
+    # A store only holds a bare Python value, write_shared receives it
     # with its tag already stripped, so a genuinely sanitized value looks
     # identical, once written, to an unsanitized one. The next agent's
     # read is untrusted or not based entirely on that agent's own source
@@ -269,7 +269,7 @@ def test_tag_does_not_survive_through_a_sanitizer_across_the_write_read_boundary
         sanitizers=frozenset({"identity_sanitizer"}),
     )
 
-    # Agent C reads the "cleaned" key -- still untrusted, because C's own
+    # Agent C reads the "cleaned" key, still untrusted, because C's own
     # read is what determines the tag, not B's history.
     with pytest.raises(CapabilityError):
         run(
@@ -308,8 +308,8 @@ def test_reprocessing_through_an_ordinary_function_still_propagates_across_the_b
 
 
 def test_a_misconfigured_agent_does_not_compromise_a_correctly_configured_one():
-    # Agent B's own run() call doesn't declare read_shared as a source --
-    # a misconfiguration -- so within B's own execution the value looks
+    # Agent B's own run() call doesn't declare read_shared as a source:
+    # a misconfiguration, so within B's own execution the value looks
     # trusted to B. That mistake is scoped to B's own run() call; it
     # doesn't weaken Agent C's independent, correctly configured read of
     # the same store afterward.
@@ -364,7 +364,7 @@ def test_no_interpreter_state_leaks_between_separate_run_calls():
 
 def test_combining_shared_store_data_with_locally_trusted_data_is_untrusted():
     # "Merging trust levels from different sources" isn't a special
-    # multi-agent concept -- it's the same join/propagation rule already
+    # multi-agent concept, it's the same join/propagation rule already
     # used for any function taking multiple arguments of different trust.
     store, _, read_shared = _make_shared_store()
     store["inbox"] = "attacker text"

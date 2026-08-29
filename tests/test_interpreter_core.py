@@ -2,7 +2,7 @@
 dispatch, assignment, conditionals, and integrity/trust propagation
 (sources, privileged, sanitizers). Split out of the original
 test_interpreter.py, which grew to 3045 lines as every new grammar
-feature added its own block -- split by area for navigability, not
+feature added its own block, split by area for navigability, not
 by rewriting any test.
 """
 
